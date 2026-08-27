@@ -104,6 +104,25 @@ export class BuildaAdapter {
         return this.callAudio("playSFX", [path, { sessionId, volume }]);
     }
 
+    /** Opens the platform-owned pause/settings/quit surface when a host is present. */
+    public openPlatformMenu(): Promise<boolean> {
+        const builda = this.getBuilda();
+        if (!builda || !builda.runtime || typeof builda.runtime.quit !== "function") {
+            return Promise.resolve(false);
+        }
+        try {
+            return Promise.resolve(builda.runtime.quit())
+                .then((result: any) => !result || result.ok !== false)
+                .catch((error: unknown) => {
+                    console.warn("[BuildaAdapter] runtime.quit failed", error);
+                    return false;
+                });
+        } catch (error) {
+            console.warn("[BuildaAdapter] runtime.quit threw", error);
+            return Promise.resolve(false);
+        }
+    }
+
     private callAudio(method: string, args: any[]): Promise<boolean> {
         const builda = this.getBuilda();
         if (!builda || !builda.audio || typeof builda.audio[method] !== "function") {

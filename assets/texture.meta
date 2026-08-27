@@ -1,0 +1,13 @@
+{
+  "ver": "1.1.3",
+  "uuid": "ca70b80c-5fe7-4cc2-a810-03a7dd503b90",
+  "importer": "folder",
+  "isBundle": true,
+  "bundleName": "texture",
+  "priority": 1,
+  "compressionType": {},
+  "optimizeHotUpdate": {},
+  "inlineSpriteFrames": {},
+  "isRemoteBundle": {},
+  "subMetas": {}
+}

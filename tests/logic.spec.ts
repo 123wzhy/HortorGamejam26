@@ -433,6 +433,9 @@ async function testBuildaAudioResultMapping(): Promise<void> {
                         capturedSfxOptions = options;
                         return Promise.resolve({ ok: true, data: { available: true } });
                     }
+                },
+                runtime: {
+                    quit: () => Promise.resolve({ ok: true, data: {} })
                 }
             }
         };
@@ -442,9 +445,11 @@ async function testBuildaAudioResultMapping(): Promise<void> {
         equal(await hostedAdapter.playSFX("audio/sfx/hit.ogg", "combo-hit", 0.5), true, "SFX Result maps to true");
         equal(capturedSfxOptions.sessionId, "combo-hit", "SFX session id uses SDK contract key");
         equal(Object.prototype.hasOwnProperty.call(capturedSfxOptions, "key"), false, "Legacy key is absent");
+        equal(await hostedAdapter.openPlatformMenu(), true, "Platform menu maps a successful runtime.quit Result");
 
         delete global.window;
         equal(await new BuildaAdapter().playSFX("audio/sfx/hit.ogg"), false, "Missing host maps to false");
+        equal(await new BuildaAdapter().openPlatformMenu(), false, "Missing host cannot open platform settings");
     } finally {
         if (hadWindow) {
             global.window = previousWindow;

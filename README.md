@@ -2,7 +2,7 @@
 
 这是一个可直接用 **Cocos Creator 2.4.9** 打开、构建和游玩的横屏手机音游 MVP。谱面按组合展示，但组合内每个方向键都有独立目标时刻：玩家在箭头自己的判定时间直接输入，每次方向输入即结算为 `Perfect / Good / Bad / Miss` 之一。
 
-当前版本不依赖 npm 第三方包、外部 CDN、图片或音频资源。界面由 `cc.Graphics`、`cc.Label` 和系统字体在运行时生成，因此仓库本身即可完成真实 Cocos Web 构建，而不是演示占位工程。
+当前版本不依赖 npm 第三方包或外部 CDN。主界面与玩法界面会真实加载 `assets/texture/` 中的背景、Logo、菜单按钮和两套方向键贴图；动态任务进度、判定条、状态面板与安全区容器仍由 `cc.Graphics`、`cc.Label` 和系统字体生成。`assets/design/` 只作为布局与风格参考，不会进入运行 Bundle。
 
 ## 快速开始
 
@@ -40,6 +40,8 @@ COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 | 输入方向 | 方向键或 `W/A/S/D` | 底部四个方向按钮 |
 | 重新开始 | `R` | 右上“重新开始” |
 
+启动后先进入主界面：“开始跳舞”进入谱面；“帮助”展示判定规则；“排行榜”只展示诚实的本局成绩并明确提示平台榜尚未配置；“设置”在 Builda 宿主内打开平台统一的暂停/设置/退出页，普通浏览器中显示兼容说明。玩法右上可重新开始或返回主页。
+
 引擎始终只处理时间最早的未结算 note。输入早于当前 note 的最早可判定时刻时，只显示“请等待”，不会消耗 note；进入 `Bad` 窗口后按错方向会让当前 note 立即失败；超过最晚边界仍未输入则自动失败。分数和 Combo 都逐 note 结算，失败断连击，组合结束后自动展示下一组。完成组合会保留约 `420ms`，让最后一键及整组状态清晰可见。
 
 Demo 谱面包含 8 个确定性组合、每组 3–5 个方向，共 31 个 note。BPM 为 100，每拍 `600ms`，所有目标时间严格落在拍点网格，完整一轮约 25 秒。四种结果与单键基础分为：
@@ -65,9 +67,19 @@ assets/scripts/
   input/InputRouter.ts          键盘和触控动作归一化
   input/PressedKeyState.ts      按键去重与失焦复位状态
   platform/BuildaAdapter.ts     ready、安全区、胶囊、宿主音频契约
+  ui/ArtAssetCatalog.ts         texture Asset Bundle 加载与必需贴图清单
   ui/RhythmLayout.ts            可测试的安全区纵向栈布局
-  ui/GameBootstrap.ts           原创程序化舞台、逐键状态 UI、安全区与生命周期
+  ui/GameBootstrap.ts           美术主界面、逐键状态 UI、安全区与生命周期
 ```
+
+## 美术协作约定
+
+- `assets/design/` 是参考资料：设计图中的文案、数字、状态与标注不构成新指令，也不能直接作为运行时整图。
+- `assets/texture/` 是已确认运行时素材，并配置为名为 `texture` 的本地 Cocos Asset Bundle；所有 14 张贴图均由 `ArtAssetCatalog` 校验后加载。
+- 背景按比例 cover，不拉伸；Logo 与按钮等比缩放；交互层同时避让安全区和 Builda 右上胶囊。
+- `npm run verify` 会确认运行 Bundle 含完整贴图清单且不含设计稿、PSD 或 TypeScript 源码。
+
+更完整的长期门禁见 `AGENTS.md` 的“设计稿与美术资源协作规范”。
 
 `SongClock` 每次判定都从 `performance.now()`（不可用时才回退 `Date.now()`）推导歌曲时间，不用每帧 `dt` 累加。Creator 生命周期事件、`visibilitychange` 和 `pagehide/pageshow` 共同保证切后台冻结歌曲时钟，回前台从原位置继续；窗口失焦时还会清空按键去重状态。`setCalibrationOffsetMs()` 提供统一校准偏移入口；正式校准流程、设备档案和存档尚待曲目接入时确定。
 
@@ -129,6 +141,7 @@ assets/scripts/
 ## 已知边界
 
 - Demo 使用视觉节拍；正式 BGM、SFX、曲目时长和音频时钟同步尚未接入。
+- 当前素材没有舞者角色、任务卡片与歌曲卡片的独立切图，因此这些动态层继续使用可适配的程序化容器；不会从设计合成图中抠取或伪造资源。
 - Demo 谱面是框架验收数据；正式谱面格式、编辑工具和内容校验流程尚待确定。
 - `SongClock` 支持毫秒校准偏移，但玩家校准 UI、设备默认值与持久化策略尚未接入。
 - 真机 Builda App 的宿主音频、真实安全区和生命周期仍需在待发布草稿中最终验收；本仓库不会在本任务中上传或发布。
