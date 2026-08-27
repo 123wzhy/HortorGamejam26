@@ -1,0 +1,3539 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── 项目级布局（一个项目 = 一份工具链 = 一个版本号）─────────────────────────
+# CLI/SKILL/VERSION 作为项目工具链纳入 Git；publish.env、可再生缓存与收据只留本地；
+# 授权凭证（token/refresh-token）唯一留在 $HOME/.builda-agent/。
+# 旧命名 .builda-godot-agent（多引擎化前）由 legacy_project_dir_migrate / legacy_auth_migrate
+# 在下次运行时自动迁移（见 docs/decisions/0013）。
+SELF_PATH="${BASH_SOURCE[0]:-$0}"
+SELF_DIR="$(cd "$(dirname "$SELF_PATH")" && pwd -P)"
+AUTH_DIR="${BUILDA_AUTH_DIR:-$HOME/.builda-agent}"
+LEGACY_AUTH_DIR="$HOME/.builda-godot-agent"
+TOKEN_FILE="$AUTH_DIR/token"
+REFRESH_FILE="$AUTH_DIR/refresh-token"
+PROJECT_STATE_DIR="${BUILDA_PROJECT_STATE_DIR:-.builda-agent}"
+LEGACY_PROJECT_STATE_DIR=".builda-godot-agent"
+ROOT="$PROJECT_STATE_DIR"
+ENV_FILE="$ROOT/publish.env"
+MANIFEST="${BUILDA_MANIFEST:-builda.publish.json}"
+PROJECT_FILE="${BUILDA_PROJECT_FILE:-$PROJECT_STATE_DIR/game.json}"
+LEGACY_PROJECT_FILE="${BUILDA_LEGACY_PROJECT_FILE:-builda.game.json}"
+VERSION="0.4.36"
+RUNTIME_VERSION_FILE="$ROOT/VERSION"
+SDK_VERSION_FILE="$PROJECT_STATE_DIR/sdk-version"
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+BUILDA_DEFAULT_BASE="https://builda-godot-api.poni.fun"
+if [[ "$BUILDA_DEFAULT_BASE" == \{\{* ]]; then
+  BUILDA_DEFAULT_BASE=""
+fi
+BUILDA_BASE="${BUILDA_BASE:-$BUILDA_DEFAULT_BASE}"
+if [ -n "${BUILDA_STUDIO_API_BASE:-}" ]; then
+  # Studio Worker 显式注入集群内 API；外部项目继续使用 publish.env 的公网地址。
+  BUILDA_BASE="${BUILDA_STUDIO_API_BASE%/}"
+fi
+BUILDA_DEFAULT_AGENT_BASE="https://ai.builda.game"
+if [[ "$BUILDA_DEFAULT_AGENT_BASE" == \{\{* ]]; then
+  BUILDA_DEFAULT_AGENT_BASE="$BUILDA_BASE"
+fi
+BUILDA_AGENT_BASE="${BUILDA_AGENT_BASE:-$BUILDA_DEFAULT_AGENT_BASE}"
+BUILDA_DEFAULT_SITE_BASE="https://builda.game"
+if [[ "$BUILDA_DEFAULT_SITE_BASE" == \{\{* ]]; then
+  BUILDA_DEFAULT_SITE_BASE="https://builda.game"
+fi
+BUILDA_SITE_ORIGIN="${BUILDA_SITE_ORIGIN:-}"
+BUILDA_EFFECTIVE_SITE_BASE="${BUILDA_SITE_ORIGIN:-$BUILDA_DEFAULT_SITE_BASE}"
+BUILDA_EARLY_ACCESS_URL="${BUILDA_EARLY_ACCESS_URL:-$BUILDA_EFFECTIVE_SITE_BASE/early-access}"
+
+usage() {
+  cat <<USAGE
+builda auth [code|--force]      Ensure agent authorization; --force switches account.
+builda whoami                   Show the account used for publishing.
+builda check                    Check local BuildaGame agent environment.
+builda update                   Update this local CLI and installed agent skill.
+builda uninstall [--purge]      Remove project toolchain/registrations; --purge also removes project data and credentials.
+builda engine detect [dir]      Detect project engine; Godot, HTML5 and Unity draft upload are available.
+builda new-manifest             Write builda.publish.json template if missing.
+builda dev --web <dir|zip>      Run a local H5 build (Godot Web / pixi / phaser / Unity WebGL ...) with the Builda mock SDK.
+                               --assets <dir|zip> serves audio/**, res/** as a same-origin fallback (auto-detects ./assets).
+builda godot web-template-check [godot|godot4]
+                               Check Godot Web export templates for the current HOME.
+builda sdk init                 Create a minimal Godot project skeleton for SDK testing.
+builda sdk install              Install the Builda SDK (Godot: addons/builda; HTML5: .builda-agent/sdk/web; Unity: Assets/Builda).
+builda sdk check                Check installed Builda SDK files in this project.
+builda sdk smoke                Print local mock smoke-test URL guidance.
+builda bundle-check <zip>       Check that an H5 Bundle zip is uploadable (per-engine rules).
+builda upload-build <zip>       Upload H5 Bundle zip and update the selected manifest.
+builda upload-status <session>  Query a resumable build upload using the current grant.
+builda upload-cancel <session>  Cancel an owned resumable build upload.
+builda publish [zip] [manifest]  Upload an optional build and sync this project's draft.
+builda assets check <zip>       Check assets.zip: audio/** (.mp3|ogg|wav) + res/** (.glb|gltf|bin|ktx2|png|jpg|jpeg|webp|json|bundle|hash|pck; pck must be data-only).
+builda assets upload <zip>      Upload audio/res assets; update manifest when possible.
+builda create-draft [manifest]  Sync a new Builda pending draft and update the Builda current version.
+builda update-draft [game_id] [manifest]
+                               Sync a Builda pending draft and update the Builda current version.
+builda status                   Show saved receipts.
+builda sync-project             Re-write project-level agent registrations (.gitignore/stubs/AGENTS.md).
+builda version                  Show local CLI version.
+
+Project-scoped toolchain: this CLI lives in <project>/.builda-agent/ and must run
+from that project's root. Credentials stay per-user in \$HOME/.builda-agent/.
+USAGE
+}
+
+need_token() {
+  if grant_needs_refresh; then
+    refresh_grant >/dev/null 2>&1 || true
+  fi
+  if [ ! -f "$TOKEN_FILE" ]; then
+    echo "No agent grant. Run: builda auth" >&2
+    auth_recovery_hint >&2
+    exit 1
+  fi
+}
+
+token() { cat "$TOKEN_FILE"; }
+
+builda_cmd() {
+  if command -v builda >/dev/null 2>&1; then
+    printf 'builda'
+  else
+    printf './%s/builda' "$ROOT"
+  fi
+}
+
+auth_recovery_hint() {
+  local cli
+  cli="$(builda_cmd)"
+  if [ -f "$REFRESH_FILE" ]; then
+    echo "auth-next=retry the failed command; this CLI refreshes the short agent grant automatically when the saved agent authorization is still valid."
+  else
+    echo "auth-next=$cli auth"
+  fi
+  echo "auth-resume=after auth succeeds or refreshes, retry the command that failed."
+}
+
+# detect_engine_value 静默判定引擎（小写，与后端/协议口径一致）：
+# godot 优先（有 project.godot 即 godot）；unity = ProjectSettings/ProjectVersion.txt 或
+# Assets/+Packages/manifest.json；HTML5 = 根目录有 index.html 或 package.json
+# （pixi/phaser/vite 等工程形态）。
+detect_engine_value() {
+  local root="${1:-.}"
+  if [ -f "$root/project.godot" ]; then
+    echo "godot"
+  elif [ -f "$root/ProjectSettings/ProjectVersion.txt" ] || { [ -d "$root/Assets" ] && [ -f "$root/Packages/manifest.json" ]; }; then
+    echo "unity"
+  elif [ -f "$root/index.html" ] || [ -f "$root/package.json" ]; then
+    echo "h5"
+  else
+    echo "unknown"
+  fi
+}
+
+engine_detect() {
+  local root="${1:-.}"
+  [ -d "$root" ] || { echo "engine-detect=failed"; echo "directory not found: $root" >&2; exit 1; }
+  local engine
+  engine="$(detect_engine_value "$root")"
+  echo "engine=$engine"
+  case "$engine" in
+    godot|h5|unity)
+      echo "engine-upload-support=available"
+      return 0
+      ;;
+    *)
+      echo "engine-upload-support=unknown"
+      echo "Project engine could not be detected. Do not upload until the user points you at a Godot, HTML5 or Unity project root." >&2
+      return 1
+      ;;
+  esac
+}
+
+# manifest_engine 引擎单一来源：manifest 的 engine 字段优先，缺失时按目录判定，
+# 非法值兜底 godot（与后端"空=godot"归一口径一致）。
+manifest_engine() {
+  local file="${1:-$MANIFEST}" v=""
+  [ -f "$file" ] && v="$(manifest_string_field "$file" engine)"
+  if [ -z "$v" ]; then
+    v="$(detect_engine_value .)"
+  fi
+  case "$v" in
+    godot|h5|unity) ;;
+    *) v="godot" ;;
+  esac
+  printf '%s' "$v"
+}
+
+godot_web_template_check() {
+  local godot_cmd="${1:-godot}"
+  if ! command -v "$godot_cmd" >/dev/null 2>&1; then
+    echo "godot-web-template=missing-godot-command"
+    echo "Godot command not found: $godot_cmd" >&2
+    echo "Install Godot, or rerun with the actual command: builda godot web-template-check godot4" >&2
+    exit 1
+  fi
+
+  local version template_version template_dir
+  version="$("$godot_cmd" --version 2>/dev/null | awk '{print $1}' | head -1)"
+  if [ -z "$version" ]; then
+    echo "godot-web-template=unknown-version"
+    echo "Could not read Godot version from: $godot_cmd --version" >&2
+    exit 1
+  fi
+
+  template_version="$(printf '%s' "$version" | sed 's/\.official\..*$//')"
+  template_dir="$HOME/.local/share/godot/export_templates/$template_version"
+  if [ -f "$template_dir/web_release.zip" ] || [ -f "$template_dir/web_nothreads_release.zip" ]; then
+    echo "godot-web-template=ok"
+    echo "godot-command=$godot_cmd"
+    echo "godot-version=$version"
+    echo "godot-template-version=$template_version"
+    echo "godot-template-dir=$template_dir"
+    return 0
+  fi
+
+  echo "godot-web-template=missing"
+  echo "godot-command=$godot_cmd"
+  echo "godot-version=$version"
+  echo "godot-template-version=$template_version"
+  echo "godot-template-dir=$template_dir"
+  echo "Godot is installed, but Web export templates are missing for this HOME." >&2
+  echo "Install matching Web export templates for Godot $version, then retry the export." >&2
+  echo "If templates exist under another HOME on this machine, copy that version directory to: $template_dir" >&2
+  echo "Do not zip/upload a failed or partial export; rerun bundle-check after a successful export." >&2
+  exit 1
+}
+
+# Game_* commands are mandarin cmd-over-HTTP routes mounted at /game/*.
+# Agent REST helpers such as upload/auth live under /api/v1/*.
+cmd_url() { printf '%s/%s' "$BUILDA_BASE" "$1"; }
+
+http_request() {
+  local label="$1"
+  shift
+  local body_file status curl_code
+  body_file="$(mktemp)"
+  status="$(curl -sS -o "$body_file" -w "%{http_code}" "$@")" || {
+    curl_code=$?
+    echo "$label failed: curl exit $curl_code" >&2
+    if [ -s "$body_file" ]; then
+      echo "$label response body:" >&2
+      cat "$body_file" >&2
+      echo >&2
+    fi
+    rm -f "$body_file"
+    return "$curl_code"
+  }
+  case "$status" in
+    2??)
+      cat "$body_file"
+      rm -f "$body_file"
+      return 0
+      ;;
+    *)
+      echo "$label failed: HTTP $status" >&2
+      echo "$label response body:" >&2
+      cat "$body_file" >&2
+      echo >&2
+      if [ "$status" = "401" ] || [ "$status" = "403" ] || grep -q '"code"[[:space:]]*:[[:space:]]*10006' "$body_file"; then
+        if [ "$label" = "Studio auth exchange" ]; then
+          echo "studio-authorization-expired=1" >&2
+        else
+          echo "auth-required=1" >&2
+          echo "Agent grant is missing or expired. Run: builda auth" >&2
+          auth_recovery_hint >&2
+        fi
+      fi
+      rm -f "$body_file"
+      return 1
+      ;;
+  esac
+}
+
+authenticated_http_response() {
+  local label="$1"
+  shift
+  local body_file curl_code attempt=0
+  body_file="$(mktemp)"
+  AUTH_HTTP_STATUS=""
+  AUTH_HTTP_BODY=""
+  while [ "$attempt" -lt 2 ]; do
+    AUTH_HTTP_STATUS="$(curl -sS -o "$body_file" -w "%{http_code}" "$@" -H "Authorization: Bearer $(token)")" || {
+      curl_code=$?
+      echo "$label failed: curl exit $curl_code" >&2
+      rm -f "$body_file"
+      return "$curl_code"
+    }
+    AUTH_HTTP_BODY="$(cat "$body_file")"
+    if [ "$AUTH_HTTP_STATUS" = "401" ] && [ "$attempt" -eq 0 ] && [ -f "$REFRESH_FILE" ]; then
+      if refresh_grant >&2; then
+        attempt=$((attempt + 1))
+        continue
+      fi
+    fi
+    if [ "$AUTH_HTTP_STATUS" = "401" ]; then
+      echo "BUILDA_AUTH_REJECTED: authorization was rejected after one refresh" >&2
+      rm -f "$body_file"
+      return 1
+    fi
+    rm -f "$body_file"
+    return 0
+  done
+  rm -f "$body_file"
+  echo "BUILDA_AUTH_REJECTED: authorization was rejected after one refresh" >&2
+  return 1
+}
+
+authenticated_http_request() {
+  local label="$1"
+  shift
+  authenticated_http_response "$label" "$@" || return $?
+  case "$AUTH_HTTP_STATUS" in
+    2??)
+      printf '%s' "$AUTH_HTTP_BODY"
+      ;;
+    *)
+      echo "$label failed: HTTP $AUTH_HTTP_STATUS" >&2
+      printf '%s\n' "$AUTH_HTTP_BODY" >&2
+      if [ "$AUTH_HTTP_STATUS" = "403" ] || grep -q '"code"[[:space:]]*:[[:space:]]*10006' <<EOF
+$AUTH_HTTP_BODY
+EOF
+      then
+        echo "auth-required=1" >&2
+        echo "Agent grant is missing or expired. Run: builda auth" >&2
+        auth_recovery_hint >&2
+      fi
+      return 1
+      ;;
+  esac
+}
+
+json_field() {
+  local name="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r ".$name // empty"
+  else
+    sed -n "s/.*\"$name\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -1
+  fi
+}
+
+json_number() {
+  local name="$1"
+  if command -v jq >/dev/null 2>&1; then
+    jq -r ".$name // 0"
+  else
+    sed -n "s/.*\"$name\"[[:space:]]*:[[:space:]]*\\([0-9]*\\).*/\\1/p" | head -1
+  fi
+}
+
+write_acting_identity() {
+  local identity role_id user_id username account_system
+  need_token
+  identity="$(authenticated_http_request "whoami" "$BUILDA_BASE/api/v1/agent/whoami")"
+  role_id="$(printf '%s' "$identity" | json_number roleId)"
+  user_id="$(printf '%s' "$identity" | json_field userId)"
+  username="$(printf '%s' "$identity" | json_field username)"
+  account_system="$(printf '%s' "$identity" | json_field accountSystem)"
+  echo "api-base=$BUILDA_BASE"
+  echo "acting-as-role-id=$role_id"
+  echo "acting-as-user-id=$user_id"
+  echo "acting-as-username=$username"
+  [ -n "$account_system" ] && echo "acting-as-account-system=$account_system"
+  return 0
+}
+
+write_publish_preflight() {
+  local action="$1" target="$2"
+  write_acting_identity
+  echo "action=$action"
+  echo "target-game=$target"
+}
+
+validate_manifest_metadata() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$file" <<'PY'
+import json
+import sys
+
+contract = json.loads(r'''{"categories":["action","strategy","rolePlay","plot","adventure","sandBox","survival","pzzle","mystery","leisure","simulation","yangCheng","card","desktop","tower","rogueLike","shoot","speed","sport","fangZhi","music","dress","other","cooperation","moba","asymmetric","party","fight"],"coverKinds":["palette","image"],"engines":["godot","h5","unity"],"limits":{"descriptionBytes":600,"taglineBytes":90,"tags":5,"titleBytes":48},"orientations":["landscape","portrait"]}''')
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+if not isinstance(data, dict):
+    raise SystemExit("builda.publish.json must contain a JSON object.")
+
+def utf8_len(value):
+    return len(value.encode("utf-8"))
+
+def require_string(key, *, required=False, max_bytes=None):
+    value = data.get(key)
+    if not isinstance(value, str):
+        raise SystemExit(f"{key} must be a string.")
+    if required and not value:
+        raise SystemExit(f"{key} is required.")
+    if max_bytes is not None and utf8_len(value) > max_bytes:
+        raise SystemExit(f"{key} must be at most {max_bytes} UTF-8 bytes.")
+    return value
+
+limits = contract["limits"]
+require_string("title", required=True, max_bytes=limits["titleBytes"])
+require_string("tagline", max_bytes=limits["taglineBytes"])
+require_string("desc", max_bytes=limits["descriptionBytes"])
+
+for key, contract_key in (
+    ("category", "categories"),
+    ("orientation", "orientations"),
+    ("coverKind", "coverKinds"),
+):
+    value = require_string(key, required=True)
+    allowed = contract[contract_key]
+    if value not in allowed:
+        raise SystemExit(f"{key} must be one of: {', '.join(allowed)}; got {value!r}.")
+
+engine = data.get("engine", "")
+if not isinstance(engine, str):
+    raise SystemExit("engine must be a string.")
+if engine and engine not in contract["engines"]:
+    raise SystemExit(f"engine must be one of: {', '.join(contract['engines'])}; got {engine!r}.")
+
+tags = data.get("tags", [])
+if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+    raise SystemExit("tags must be an array of strings.")
+if len(tags) > limits["tags"]:
+    raise SystemExit(f"tags supports at most {limits['tags']} entries.")
+PY
+}
+
+normalize_manifest_category() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+category = data.get("category")
+if not isinstance(category, str) or not category:
+    raise SystemExit(0)
+contract = json.loads(r'''{"categories":["action","strategy","rolePlay","plot","adventure","sandBox","survival","pzzle","mystery","leisure","simulation","yangCheng","card","desktop","tower","rogueLike","shoot","speed","sport","fangZhi","music","dress","other","cooperation","moba","asymmetric","party","fight"],"coverKinds":["palette","image"],"engines":["godot","h5","unity"],"limits":{"descriptionBytes":600,"taglineBytes":90,"tags":5,"titleBytes":48},"orientations":["landscape","portrait"]}''')
+if category in contract["categories"]:
+    raise SystemExit(0)
+data["category"] = "other"
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+print(f"category={category!r} normalized to other", file=sys.stderr)
+PY
+}
+
+validate_manifest_pay_points() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$file" <<'PY'
+import json
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+if "payPoints" not in data:
+    raise SystemExit(0)
+points = data.get("payPoints")
+if not isinstance(points, list) or len(points) == 0:
+    print("payPoints must be omitted for games without in-app purchases; do not send an empty array.", file=sys.stderr)
+    raise SystemExit(1)
+seen = set()
+pay_id_re = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+for i, point in enumerate(points):
+    if not isinstance(point, dict):
+        print(f"payPoints[{i}] must be an object with payId/payName/price.", file=sys.stderr)
+        raise SystemExit(1)
+    pay_id = point.get("payId")
+    pay_name = str(point.get("payName") or "").strip()
+    price = point.get("price")
+    if not isinstance(pay_id, str) or not pay_id_re.fullmatch(pay_id):
+        print(f"payPoints[{i}].payId must be a string matching [A-Za-z0-9_-] with 1-64 bytes.", file=sys.stderr)
+        raise SystemExit(1)
+    if pay_id in seen:
+        print(f"payPoints payId duplicated: {pay_id}", file=sys.stderr)
+        raise SystemExit(1)
+    seen.add(pay_id)
+    if not pay_name:
+        print(f"payPoints[{i}].payName is required.", file=sys.stderr)
+        raise SystemExit(1)
+    if not isinstance(price, int) or isinstance(price, bool):
+        print(f"payPoints[{i}].price must be an integer G-coin amount.", file=sys.stderr)
+        raise SystemExit(1)
+    if price < 100:
+        print(f"payPoints[{i}].price must be at least 100 G-coins.", file=sys.stderr)
+        raise SystemExit(1)
+PY
+}
+
+validate_manifest_rank_boards() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$file" <<'PY'
+import json
+import re
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+if "rankBoards" not in data:
+    raise SystemExit(0)
+boards = data.get("rankBoards")
+if not isinstance(boards, list):
+    print("rankBoards must be an array; omit it to keep existing boards or use [] to clear all boards.", file=sys.stderr)
+    raise SystemExit(1)
+if len(boards) > 5:
+    print("rankBoards supports at most 5 boards.", file=sys.stderr)
+    raise SystemExit(1)
+required = {"rankId", "displayName", "sortType", "cycleType", "minScore", "maxScore"}
+rank_id_re = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+score_min = -9999999999
+score_max = 9999999999
+seen = set()
+for i, board in enumerate(boards):
+    if not isinstance(board, dict):
+        print(f"rankBoards[{i}] must be an object with all six fields.", file=sys.stderr)
+        raise SystemExit(1)
+    missing = sorted(required - set(board))
+    if missing:
+        print(f"rankBoards[{i}] missing required fields: {', '.join(missing)}", file=sys.stderr)
+        raise SystemExit(1)
+    rank_id = board["rankId"]
+    display_name = board["displayName"]
+    sort_type = board["sortType"]
+    cycle_type = board["cycleType"]
+    min_score = board["minScore"]
+    max_score = board["maxScore"]
+    if not isinstance(rank_id, str) or rank_id != rank_id.strip() or not rank_id_re.fullmatch(rank_id):
+        print(f"rankBoards[{i}].rankId must match [A-Za-z0-9_-] and be 1-64 bytes without surrounding whitespace.", file=sys.stderr)
+        raise SystemExit(1)
+    if rank_id in seen:
+        print(f"rankBoards rankId duplicated: {rank_id}", file=sys.stderr)
+        raise SystemExit(1)
+    seen.add(rank_id)
+    if not isinstance(display_name, str) or display_name != display_name.strip() or not display_name or len(display_name.encode("utf-8")) > 64:
+        print(f"rankBoards[{i}].displayName must be non-empty UTF-8 up to 64 bytes without surrounding whitespace.", file=sys.stderr)
+        raise SystemExit(1)
+    if sort_type not in {"asc", "desc"}:
+        print(f"rankBoards[{i}].sortType must be asc or desc.", file=sys.stderr)
+        raise SystemExit(1)
+    if cycle_type not in {"day", "week", "month", "forever"}:
+        print(f"rankBoards[{i}].cycleType must be day, week, month, or forever.", file=sys.stderr)
+        raise SystemExit(1)
+    if not isinstance(min_score, int) or isinstance(min_score, bool) or not isinstance(max_score, int) or isinstance(max_score, bool):
+        print(f"rankBoards[{i}].minScore and maxScore must be integers.", file=sys.stderr)
+        raise SystemExit(1)
+    if min_score < score_min or max_score > score_max or min_score > max_score:
+        print(f"rankBoards[{i}] score bounds must be ordered and within the supported range [-9999999999, 9999999999].", file=sys.stderr)
+        raise SystemExit(1)
+PY
+}
+
+validate_manifest_browser_minimums() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+ok = True
+for key in ("minChromeMajor", "minIOSMajor"):
+    value = data.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        print(f"{key} is missing or not a positive integer.", file=sys.stderr)
+        ok = False
+if not ok:
+    raise SystemExit(1)
+PY
+}
+
+inject_sdk_version() {
+  # sdkVersion 跟随项目 SDK 安装收据（sdk install 写入），草稿上报后进 release manifest 的
+  # sdk 契约，宿主按它下载 runtime SDK；不要手工维护该字段。
+  local file="$1" v tmp
+  [ -f "$SDK_VERSION_FILE" ] || return 0
+  v="$(head -n 1 "$SDK_VERSION_FILE" | tr -d '\r')"
+  [ -n "$v" ] || return 0
+  tmp="$(mktemp)"
+  if command -v jq >/dev/null 2>&1; then
+    if jq --arg v "$v" '.sdkVersion=$v' "$file" > "$tmp" 2>/dev/null; then mv "$tmp" "$file"; else rm -f "$tmp"; fi
+  elif command -v python3 >/dev/null 2>&1; then
+    if python3 - "$file" "$v" > "$tmp" 2>/dev/null <<'PYSDK'
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+data["sdkVersion"] = sys.argv[2]
+json.dump(data, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+PYSDK
+    then mv "$tmp" "$file"; else rm -f "$tmp"; fi
+  else
+    rm -f "$tmp"
+  fi
+}
+
+preflight_manifest_for_draft() {
+  local file="$1"
+  if ! normalize_manifest_category "$file"; then
+    echo "draft-preflight=failed" >&2
+    echo "Unable to normalize category in $file." >&2
+    exit 1
+  fi
+  if ! validate_manifest_metadata "$file"; then
+    echo "draft-preflight=failed" >&2
+    echo "Fix the publish metadata in $file using the exact allowed values printed above, then rerun this command." >&2
+    exit 1
+  fi
+  if ! validate_manifest_pay_points "$file"; then
+    echo "draft-preflight=failed" >&2
+    echo "Fix payPoints in $file. Use payPoints only for in-app purchases: [{\"payId\":\"coin_pack_1\",\"payName\":\"Coins Pack\",\"price\":100}]. Omit the field for games without purchases." >&2
+    exit 1
+  fi
+  if ! validate_manifest_rank_boards "$file"; then
+    echo "draft-preflight=failed" >&2
+    echo "Fix rankBoards in $file. Omit it to keep existing boards, use [] to clear all boards, or provide the complete target array." >&2
+    exit 1
+  fi
+  if ! validate_manifest_browser_minimums "$file"; then
+    echo "draft-preflight=failed" >&2
+    echo "Fill minChromeMajor and minIOSMajor in $file as positive integers: the LOWEST Chrome major and Safari iOS major this build actually runs on. Lower values let more devices play, so do not inflate them; but ground the floor in evidence: WASM engine exports (e.g. Godot 4 Web) inherit it from the compiler toolchain (post-MVP WASM features land around Chrome 75-85 / iOS 15; check engine or Emscripten minimum-browser docs, fall back to the platform baseline 80/15 when unverifiable), while plain canvas/DOM H5 with down-leveled JS can go much lower. Then rerun this command." >&2
+    exit 1
+  fi
+}
+
+sync_online_compatibility_revision() {
+  local file="$1" online="builda.online.json" revision tmp
+  [ -f "$online" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    revision="$(jq -er '.onlineCompatibilityRevision | select(type == "number" and floor == . and . > 0)' "$online" 2>/dev/null)" || {
+      echo "builda.online.json onlineCompatibilityRevision must be a positive integer" >&2
+      exit 1
+    }
+    tmp="$(mktemp)"
+    jq --argjson revision "$revision" '.onlineCompatibilityRevision=$revision' "$file" > "$tmp" && mv "$tmp" "$file"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$online" "$file" <<'PYREV'
+import json, sys
+online_path, manifest_path = sys.argv[1:]
+with open(online_path, encoding="utf-8") as f:
+    revision = json.load(f).get("onlineCompatibilityRevision")
+if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
+    raise SystemExit("builda.online.json onlineCompatibilityRevision must be a positive integer")
+with open(manifest_path, encoding="utf-8") as f:
+    manifest = json.load(f)
+manifest["onlineCompatibilityRevision"] = revision
+with open(manifest_path, "w", encoding="utf-8") as f:
+    json.dump(manifest, f, ensure_ascii=False, separators=(",", ":"))
+PYREV
+  else
+    echo "Syncing onlineCompatibilityRevision requires jq or python3" >&2
+    exit 1
+  fi
+}
+
+sdk_compat_check() {
+  [ -d . ] || return 0
+  command -v python3 >/dev/null 2>&1 || { echo "sdk-compat=skipped python3 missing"; return 0; }
+  python3 - <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(".").resolve()
+include_suffixes = {".gd", ".js", ".ts", ".tsx", ".jsx", ".html", ".cfg", ".tscn"}
+# Unity 工程目录整体跳过：旧 Builda SDK API 只存在于 GDScript/JS 时代，Unity 项目无迁移
+# 负担；Library/Temp 文件量大，扫描徒增耗时与误报面。
+skip_parts = {
+    ".git", ".godot", ".builda-agent", ".builda-godot-agent", "addons", "node_modules",
+    "__pycache__", "build", "dist", "target", "server-pack", "server_pack",
+    "Library", "Temp", "Obj", "Logs", "Assets", "ProjectSettings", "Packages",
+}
+patterns = [
+    (re.compile(r"\b(?:Builda|builda)\s*\.\s*cloud_get\s*\("), "replace old cloud_get(...) with private_kv_get(...)"),
+    (re.compile(r"\b(?:Builda|builda)\s*\.\s*cloud_set\s*\("), "replace old cloud_set(...) with private_kv_set(...)"),
+    (re.compile(r"\b(?:Builda|builda)\s*\.\s*cloud_delete\s*\("), "replace old cloud_delete(...) with private_kv_remove(...)"),
+    (re.compile(r"\b(?:Builda|builda)\s*\.\s*kv_get\s*\("), "kv_get(...) no longer exists; use private_kv_get(...) (value is now bytes: var_to_bytes/bytes_to_var)"),
+    (re.compile(r"\b(?:Builda|builda)\s*\.\s*kv_set\s*\("), "kv_set(...) no longer exists; use private_kv_set(key, var_to_bytes(...))"),
+    (re.compile(r"\b(?:Builda|builda)\s*\.\s*kv_remove\s*\("), "kv_remove(...) no longer exists; use private_kv_remove(...)"),
+    (re.compile(r"\b(?:Builda|builda)\s*\.\s*kv\s*\."), "Builda.kv.* no longer exists; use Builda.privateKV.* (value is now Uint8Array)"),
+    (re.compile(r"Engine\.get_singleton\s*\(\s*[\"']Builda[\"']\s*\)"), "replace old Engine.get_singleton(\"Builda\") usage with the generated BuildaClient autoload"),
+    (re.compile(r"get_node(?:_or_null)?\s*\(\s*[\"']/root/Builda[\"']\s*\)"), "replace old /root/Builda node usage with /root/BuildaClient"),
+    (re.compile(r"\b(?:Builda|builda)\s*\.\s*init\s*\("), "old Builda.init(...) is no longer part of the public SDK; use BuildaClient.builda.runtime_ready() when the game is ready"),
+    (re.compile(r"\b(?:Builda|builda)\s*\.\s*event\s*\("), "old event(...) analytics API is not part of the MVP SDK; remove it or keep analytics outside Builda"),
+    (re.compile(r"\b(?:Builda|builda)\s*\.\s*track\s*\("), "old track(...) analytics API is not part of the MVP SDK; remove it or keep analytics outside Builda"),
+    (re.compile(r"\bbackend_create\s*\("), "backend_create(...) 当前不受支持；联机功能内测中，如有需求请联系 Builda 官方"),
+    (re.compile(r"\bBuilda\s*\.\s*backend\s*\.\s*create\s*\("), "Builda.backend.create() 当前不受支持；联机功能内测中，如有需求请联系 Builda 官方"),
+]
+errors = []
+
+def strip_comment_only(line, suffix, in_block):
+    """Remove comment-only text while retaining any code after a block comment."""
+    code = line.lstrip()
+    block_markers = [("/*", "*/")]
+    if suffix == ".html":
+        block_markers.insert(0, ("<!--", "-->"))
+    if in_block:
+        end = code.find(in_block)
+        if end < 0:
+            return "", in_block
+        code = code[end + len(in_block):].lstrip()
+        in_block = ""
+    while code:
+        matched = False
+        for start, end_marker in block_markers:
+            if code.startswith(start):
+                end = code.find(end_marker, len(start))
+                if end < 0:
+                    return "", end_marker
+                code = code[end + len(end_marker):].lstrip()
+                matched = True
+                break
+        if not matched:
+            break
+    # comment-only lines are documentation, not executable legacy SDK calls.
+    if code.startswith("//") or code.startswith("#") or code.startswith(";"):
+        return "", in_block
+    return code, in_block
+
+for path in root.rglob("*"):
+    if not path.is_file() or path.suffix.lower() not in include_suffixes:
+        continue
+    rel = path.relative_to(root)
+    if any(part in skip_parts for part in rel.parts):
+        continue
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        continue
+    suffix = path.suffix.lower()
+    in_block_comment = ""
+    for line_no, line in enumerate(text.splitlines(), 1):
+        code, in_block_comment = strip_comment_only(line, suffix, in_block_comment)
+        if not code:
+            continue
+        if suffix == ".gd" and re.search(r"\b(?:Builda|builda)\s*\.\s*ready\s*\(", code):
+            errors.append(f"{rel.as_posix()}:{line_no}: old Builda SDK API found; replace old ready(...) with runtime_ready(...)")
+        if suffix in {".js", ".ts", ".tsx", ".jsx", ".html"} and re.search(r"\b(?:Builda|builda)\s*\.\s*ready\s*\(", code):
+            errors.append(f"{rel.as_posix()}:{line_no}: old Builda SDK API found; replace old Builda.ready(...) with Builda.runtime.ready(...)")
+        for pattern, hint in patterns:
+            if pattern.search(code):
+                errors.append(f"{rel.as_posix()}:{line_no}: old Builda SDK API found; {hint}")
+
+if errors:
+    print("sdk-compat=failed")
+    sys.stdout.flush()
+    for error in errors:
+        print(f"- {error}", file=sys.stderr)
+    print("- Current SDK calls are async request/signal based. If the old code expected a direct return value, store the request id and handle the result in BuildaClient.builda.sdk_result; see addons/builda/examples/example.gd and scripts/BuildaClient.gd.", file=sys.stderr)
+    raise SystemExit(1)
+
+print("sdk-compat=ok")
+PY
+}
+
+cmd_response_ok_or_exit() {
+  local label="$1"
+  local resp="$2"
+  local code msg
+  if command -v jq >/dev/null 2>&1; then
+    code="$(printf '%s' "$resp" | jq -r '.code // 0')"
+    msg="$(printf '%s' "$resp" | jq -r '.error // .msg // empty')"
+  elif command -v python3 >/dev/null 2>&1; then
+    code="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("code", 0))' <<<"$resp" 2>/dev/null || echo 0)"
+    msg="$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("error") or d.get("msg") or "")' <<<"$resp" 2>/dev/null || true)"
+  else
+    code="$(printf '%s' "$resp" | sed -n 's/.*"code"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -1)"
+    msg="$(printf '%s' "$resp" | sed -n 's/.*"error"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    [ -n "$code" ] || code=0
+  fi
+  if [ "$code" != "0" ]; then
+    if [ "$code" = "200455" ]; then
+      echo "发布失败：暂未开放外部游戏发布权限，请前往 $BUILDA_EARLY_ACCESS_URL 申请内测资格" >&2
+      printf '%s\n' "$resp" >&2
+      exit 1
+    fi
+    echo "$label failed: code=$code ${msg:-}" >&2
+    if [ "$label" = "create draft" ] && printf '%s' "$msg" | grep -qi 'platform create error'; then
+      echo "platform-create-error=1" >&2
+      echo "Builda accepted the manifest shape, but the upstream platform game-create bridge failed. Do not repackage the build just for this error; retry after auth/platform status is fixed or report it to Builda." >&2
+    fi
+    printf '%s\n' "$resp" >&2
+    exit 1
+  fi
+}
+
+remote_version() {
+  local resp=""
+  resp="$(curl -fsS "$BUILDA_AGENT_BASE/agent/version" 2>/dev/null || true)"
+  [ -n "$resp" ] || return 0
+  printf '%s' "$resp" | json_field version
+}
+
+# ── 项目级注册（stub 指针 + AGENTS.md 标记块 + .gitignore 安全分界线）─────────
+# stub 是静态短文件；skill 真身与 CLI/VERSION 一起在 $ROOT 中入库并随工具链显式更新。
+# 真身缺失时 stub 引导重装。绝不写任何 $HOME 全局注册。
+
+stub_body() {
+  printf '%s\n' \
+    '本项目已安装项目级 BuildaGame 工具链（发布 Godot Web / HTML5 / Unity WebGL 游戏到 Builda）。工具、说明书、SDK 全部随项目走，同一版本号：' \
+    '' \
+    '1. 完整说明书（先读）：项目根的 `.builda-agent/SKILL.md`' \
+    '2. 每次任务开始先跑：`./.builda-agent/builda check`（自动对齐工具链版本，并提示 SDK 是否需要同步）' \
+    '' \
+    '若上述文件缺失（例如刚 clone 本仓库），在项目根目录重装：' \
+    '' \
+    '```bash' \
+    "curl -fsSL $BUILDA_AGENT_BASE/agent/install.sh | bash" \
+    '```' \
+    '' \
+    'Windows（下载为文件，禁止 `iwr | iex`）：' \
+    '' \
+    '```powershell' \
+    '$p = Join-Path $env:TEMP "builda-install.ps1"; iwr '"$BUILDA_AGENT_BASE"'/agent/install.ps1 -UseBasicParsing -OutFile $p; & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File $p; Remove-Item -Force $p -ErrorAction SilentlyContinue' \
+    '```'
+}
+
+write_state_gitignore() {
+  mkdir -p "$ROOT"
+  # 安全分界线：CLI/SKILL/VERSION 与项目收据入库；敏感/可再生运行态不入库。
+  cat > "$ROOT/.gitignore" <<'GI'
+# BuildaGame 自动管理：仅敏感或可再生运行态不入库。
+# builda/builda.ps1/builda.cmd、SKILL.md、VERSION、game.json 与 sdk-version 入库。
+AGENT_INSTALL.md
+publish.env
+md_*.md
+last-*
+sdk/
+tools/
+token
+refresh-token
+GI
+}
+
+AGENTS_BLOCK_BEGIN="<!-- BEGIN builda (auto-managed) -->"
+AGENTS_BLOCK_END="<!-- END builda -->"
+# 多引擎化前的旧标记块（builda-godot）：写新块前先清掉，避免双块并存
+LEGACY_AGENTS_BLOCK_BEGIN="<!-- BEGIN builda-godot (auto-managed) -->"
+LEGACY_AGENTS_BLOCK_END="<!-- END builda-godot -->"
+
+strip_agents_md_block() {
+  local begin="$1" end="$2"
+  [ -f AGENTS.md ] || return 1
+  grep -qF "$begin" AGENTS.md || return 1
+  awk -v b="$begin" -v e="$end" '
+    index($0, b) {skip=1; next}
+    index($0, e) {skip=0; next}
+    !skip {print}
+  ' AGENTS.md > AGENTS.md.builda-tmp && mv AGENTS.md.builda-tmp AGENTS.md
+}
+
+write_agents_md_block() {
+  # 通用项目级入口（Codex 等原生读 AGENTS.md）；内容静态，已存在则跳过，不反复改动用户文件
+  strip_agents_md_block "$LEGACY_AGENTS_BLOCK_BEGIN" "$LEGACY_AGENTS_BLOCK_END" || true
+  if [ -f AGENTS.md ] && grep -qF "$AGENTS_BLOCK_BEGIN" AGENTS.md; then
+    return 0
+  fi
+  {
+    [ -s AGENTS.md ] && printf '\n'
+    printf '%s\n' "$AGENTS_BLOCK_BEGIN"
+    printf '%s\n\n' "## BuildaGame 发布工具（项目级）"
+    stub_body
+    printf '%s\n' "$AGENTS_BLOCK_END"
+  } >> AGENTS.md
+}
+
+remove_agents_md_block() {
+  strip_agents_md_block "$LEGACY_AGENTS_BLOCK_BEGIN" "$LEGACY_AGENTS_BLOCK_END" && echo "removed=AGENTS.md builda-godot block"
+  strip_agents_md_block "$AGENTS_BLOCK_BEGIN" "$AGENTS_BLOCK_END" && echo "removed=AGENTS.md builda block"
+  true
+}
+
+write_agent_install_md() {
+  cat > "$ROOT/AGENT_INSTALL.md" <<EOF
+# BuildaGame Agent Installed (project-scoped)
+
+Runtime (all inside this project):
+
+- CLI: ./.builda-agent/builda
+- Skill: ./.builda-agent/SKILL.md
+- Env: ./.builda-agent/publish.env
+- Installed version: $VERSION (CLI/skill/SDK share this single version)
+
+Credentials stay per-user in \$HOME/.builda-agent/ (token / refresh-token only).
+
+Next for SDK-only tasks:
+
+    ./.builda-agent/builda check
+    ./.builda-agent/builda auth
+    ./.builda-agent/builda sdk install
+    ./.builda-agent/builda sdk check
+    ./.builda-agent/builda sdk smoke
+
+Next for upload-draft tasks:
+
+    ./.builda-agent/builda check
+    ./.builda-agent/builda auth
+
+Game identity lives in ./.builda-agent/game.json (committed with the project).
+EOF
+}
+
+remove_legacy_project_stubs() {
+  # 多引擎化前的旧 stub 名（builda-godot）：每次同步注册时顺手清理，避免双注册
+  rm -rf .claude/skills/builda-godot
+  rm -f .cursor/rules/builda-godot.mdc .clinerules/builda-godot.md \
+        .roo/rules/builda-godot.md .windsurf/rules/builda-godot.md
+}
+
+sync_project_registrations() {
+  local installed=""
+  write_state_gitignore
+  write_agent_install_md
+  remove_legacy_project_stubs
+  if write_agents_md_block; then
+    installed="${installed}
+- AGENTS.md: builda block"
+  fi
+
+  if [ -d "$HOME/.claude" ] || [ -d ".claude" ]; then
+    mkdir -p .claude/skills/builda
+    {
+      echo "---"
+      echo "name: builda"
+      echo "description: BuildaGame（Builda）游戏发布工具链：接入 Builda SDK、本地 mock 调试、导出 Godot Web / Unity WebGL 或打包 HTML5 构建、上传/更新游戏草稿。"
+      echo "---"
+      echo
+      stub_body
+    } > .claude/skills/builda/SKILL.md
+    installed="${installed}
+- Claude Code: .claude/skills/builda/SKILL.md"
+  fi
+
+  if [ -d "$HOME/.cursor" ] || [ -d ".cursor" ]; then
+    mkdir -p .cursor/rules
+    {
+      echo "---"
+      echo "description: BuildaGame skill"
+      echo "alwaysApply: false"
+      echo "---"
+      echo
+      stub_body
+    } > .cursor/rules/builda.mdc
+    installed="${installed}
+- Cursor: .cursor/rules/builda.mdc"
+  fi
+
+  if [ -d ".clinerules" ] || [ -d "$HOME/Documents/Cline/Rules" ]; then
+    mkdir -p .clinerules
+    stub_body > .clinerules/builda.md
+    installed="${installed}
+- Cline: .clinerules/builda.md"
+  fi
+
+  if [ -d ".roo" ] || [ -d ".roo/rules" ]; then
+    mkdir -p .roo/rules
+    stub_body > .roo/rules/builda.md
+    installed="${installed}
+- Roo Code: .roo/rules/builda.md"
+  fi
+
+  if [ -d ".windsurf" ] || [ -d ".windsurf/rules" ]; then
+    mkdir -p .windsurf/rules
+    {
+      echo "---"
+      echo "description: BuildaGame skill"
+      echo "alwaysApply: false"
+      echo "---"
+      echo
+      stub_body
+    } > .windsurf/rules/builda.md
+    installed="${installed}
+- Windsurf: .windsurf/rules/builda.md"
+  fi
+
+  printf '%s\n' "$installed"
+}
+
+# ── 项目上下文守卫与旧布局迁移 ───────────────────────────────────────────────
+legacy_home_migrate() {
+  # 本体还躺在旧的用户级目录（老版本自更新拉到新 CLI 后落到这里）：
+  # 把工具链搬进当前项目，凭证原地保留，然后用项目里的新身体接着跑原命令。
+  local target_root="$PWD/$PROJECT_STATE_DIR"
+  echo "layout-migration=required (toolchain moved from \$HOME to per-project)" >&2
+  if [ "$PWD" = "$HOME" ] || [ "$target_root" = "$SELF_DIR" ]; then
+    echo "BuildaGame 工具链已改为项目级：请先 cd 到游戏项目根目录，再重跑原命令，" >&2
+    echo "迁移会自动完成（凭证仍留在 \$HOME 的凭证目录）。" >&2
+    exit 1
+  fi
+  mkdir -p "$target_root"
+  cp "$SELF_DIR/builda" "$target_root/builda"
+  chmod +x "$target_root/builda"
+  [ -f "$SELF_DIR/SKILL.md" ] && cp "$SELF_DIR/SKILL.md" "$target_root/SKILL.md"
+  [ -f "$SELF_DIR/VERSION" ] && cp "$SELF_DIR/VERSION" "$target_root/VERSION"
+  [ -f "$SELF_DIR/publish.env" ] && cp "$SELF_DIR/publish.env" "$target_root/publish.env"
+  sync_project_registrations >/dev/null
+  # 旧用户级目录只留凭证；全局 skill 注册一并清除（全局上下文污染清理）
+  local f
+  for f in builda builda.ps1 builda.cmd SKILL.md VERSION AGENT_INSTALL.md publish.env \
+           md_cysj_app.md md_cjk_font.md md_mobile_perf.md \
+           last-build.json last-assets.json last-draft.json last-game-id last-draft-id last-version-id; do
+    rm -f "$SELF_DIR/$f"
+  done
+  rm -rf "${CODEX_HOME:-$HOME/.codex}/skills/builda-godot" "$HOME/.claude/skills/builda-godot" \
+         "${CODEX_HOME:-$HOME/.codex}/skills/builda" "$HOME/.claude/skills/builda"
+  rm -f "$HOME/.cursor/rules/builda-godot.mdc" "$HOME/Documents/Cline/Rules/builda-godot.md" \
+        "$HOME/.cursor/rules/builda.mdc" "$HOME/Documents/Cline/Rules/builda.md"
+  echo "layout-migration=done target=$target_root (credentials kept in $AUTH_DIR)" >&2
+  exec "$target_root/builda" "$@"
+}
+
+legacy_project_dir_migrate() {
+  # 本体躺在旧命名的项目目录 .builda-godot-agent/（多引擎化前安装）：
+  # 把内容搬进 .builda-agent/、重写注册 stub、删旧目录，再用新路径 CLI 接力原命令。
+  local target_root="$PWD/$PROJECT_STATE_DIR"
+  echo "layout-migration=required (toolchain dir renamed $LEGACY_PROJECT_STATE_DIR -> $PROJECT_STATE_DIR)" >&2
+  if [ "$(cd "$LEGACY_PROJECT_STATE_DIR" 2>/dev/null && pwd -P || true)" != "$SELF_DIR" ]; then
+    echo "run-from=project-root-required" >&2
+    echo "本 CLI 是项目级工具，必须在它所属的项目根目录运行迁移：" >&2
+    echo "  cd $(dirname "$SELF_DIR") && ./$LEGACY_PROJECT_STATE_DIR/builda <command>" >&2
+    exit 1
+  fi
+  mkdir -p "$target_root"
+  local f
+  for f in builda builda.ps1 builda.cmd SKILL.md VERSION publish.env game.json sdk-version \
+           last-build.json last-assets.json last-draft.json last-game-id last-draft-id last-version-id \
+           md_cysj_app.md md_cjk_font.md md_mobile_perf.md md_rankboards.md; do
+    [ -f "$SELF_DIR/$f" ] && cp "$SELF_DIR/$f" "$target_root/$f"
+  done
+  [ -d "$SELF_DIR/sdk" ] && cp -R "$SELF_DIR/sdk" "$target_root/sdk"
+  chmod +x "$target_root/builda" 2>/dev/null || true
+  sync_project_registrations >/dev/null
+  rm -rf "$SELF_DIR"
+  echo "layout-migration=done target=$target_root" >&2
+  exec "$target_root/builda" "$@"
+}
+
+legacy_auth_migrate() {
+  # 凭证目录改名迁移：复制不删除——旧 CLI（其他项目里尚未自更新的）仍读旧目录。
+  # uninstall --purge 会两代一起清；BUILDA_AUTH_DIR 显式覆盖时不迁移。
+  [ -n "${BUILDA_AUTH_DIR:-}" ] && return 0
+  [ -f "$TOKEN_FILE" ] && return 0
+  [ -f "$LEGACY_AUTH_DIR/token" ] || return 0
+  mkdir -p "$AUTH_DIR"
+  cp "$LEGACY_AUTH_DIR/token" "$TOKEN_FILE"
+  chmod 600 "$TOKEN_FILE"
+  if [ -f "$LEGACY_AUTH_DIR/refresh-token" ] && [ ! -f "$REFRESH_FILE" ]; then
+    cp "$LEGACY_AUTH_DIR/refresh-token" "$REFRESH_FILE"
+    chmod 600 "$REFRESH_FILE"
+  fi
+  echo "auth-migration=copied credentials $LEGACY_AUTH_DIR -> $AUTH_DIR (legacy kept for old CLIs)" >&2
+}
+
+require_project_context() {
+  if [ "$SELF_DIR" = "$AUTH_DIR" ] || [ "$SELF_DIR" = "$LEGACY_AUTH_DIR" ]; then
+    legacy_home_migrate "$@"
+  fi
+  if [ "$(basename "$SELF_DIR")" = "$LEGACY_PROJECT_STATE_DIR" ] && [ "$PROJECT_STATE_DIR" != "$LEGACY_PROJECT_STATE_DIR" ]; then
+    legacy_project_dir_migrate "$@"
+  fi
+  if [ "$(cd "$PROJECT_STATE_DIR" 2>/dev/null && pwd -P || true)" != "$SELF_DIR" ]; then
+    echo "run-from=project-root-required" >&2
+    echo "本 CLI 是项目级工具，必须在它所属的项目根目录运行：" >&2
+    echo "  cd $(dirname "$SELF_DIR") && ./$PROJECT_STATE_DIR/builda <command>" >&2
+    exit 1
+  fi
+}
+
+remove_if_exists() {
+  local path="$1"
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    rm -rf "$path"
+    echo "removed=$path"
+  fi
+}
+
+uninstall_builda() {
+  local purge=0
+  case "${1:-}" in
+    --purge) purge=1 ;;
+    "" ) ;;
+    -h|--help|help)
+      echo "Usage: builda uninstall [--purge]"
+      echo "Default removes the project toolchain and agent registrations, keeps game.json/sdk-version"
+      echo "and the per-user credentials in \$HOME/.builda-agent/."
+      echo "--purge also removes the whole $ROOT directory AND per-user credentials"
+      echo "(credentials are shared by every project on this machine)."
+      return 0
+      ;;
+    *) echo "unknown uninstall option: $1" >&2; exit 1 ;;
+  esac
+
+  # 项目级注册（新旧两代 stub 名一起清）
+  remove_if_exists ".claude/skills/builda"
+  remove_if_exists ".cursor/rules/builda.mdc"
+  remove_if_exists ".clinerules/builda.md"
+  remove_if_exists ".roo/rules/builda.md"
+  remove_if_exists ".windsurf/rules/builda.md"
+  remove_if_exists ".claude/skills/builda-godot"
+  remove_if_exists ".cursor/rules/builda-godot.mdc"
+  remove_if_exists ".clinerules/builda-godot.md"
+  remove_if_exists ".roo/rules/builda-godot.md"
+  remove_if_exists ".windsurf/rules/builda-godot.md"
+  remove_agents_md_block
+  # 历史遗留的全局注册（旧版本写入 $HOME 的）顺手清掉
+  remove_if_exists "${CODEX_HOME:-$HOME/.codex}/skills/builda-godot"
+  remove_if_exists "$HOME/.claude/skills/builda-godot"
+  remove_if_exists "$HOME/.cursor/rules/builda-godot.mdc"
+  remove_if_exists "$HOME/Documents/Cline/Rules/builda-godot.md"
+
+  if [ "$purge" = "1" ]; then
+    remove_if_exists "$ROOT"
+    remove_if_exists "$LEGACY_PROJECT_STATE_DIR"
+    remove_if_exists "$TOKEN_FILE"
+    remove_if_exists "$REFRESH_FILE"
+    remove_if_exists "$LEGACY_AUTH_DIR/token"
+    remove_if_exists "$LEGACY_AUTH_DIR/refresh-token"
+    echo "uninstall=ok"
+    echo "uninstall-mode=purge (credentials removed for ALL projects on this machine)"
+    return 0
+  fi
+
+  local f
+  for f in SKILL.md md_cysj_app.md md_cjk_font.md md_mobile_perf.md builda builda.ps1 builda.cmd \
+           VERSION AGENT_INSTALL.md publish.env last-build.json last-assets.json last-draft.json \
+           last-game-id last-draft-id last-version-id; do
+    remove_if_exists "$ROOT/$f"
+  done
+  echo "uninstall=ok"
+  echo "uninstall-mode=keep-project-data (game.json/sdk-version kept; credentials kept in $AUTH_DIR)"
+  [ -f "$TOKEN_FILE" ] && echo "grant=kept"
+  [ -f "$REFRESH_FILE" ] && echo "agent-authorization=kept"
+  true
+}
+
+self_update() {
+  local new_version="${1:-$VERSION}"
+  mkdir -p "$ROOT"
+  local cli_tmp windows_cli_tmp windows_cmd_tmp skill_tmp
+  cli_tmp="$(mktemp)"
+  windows_cli_tmp="$(mktemp)"
+  windows_cmd_tmp="$(mktemp)"
+  skill_tmp="$(mktemp)"
+  curl -fsSL "$BUILDA_AGENT_BASE/agent/builda" -o "$cli_tmp"
+  curl -fsSL "$BUILDA_AGENT_BASE/agent/builda.ps1" -o "$windows_cli_tmp"
+  curl -fsSL "$BUILDA_AGENT_BASE/agent/builda.cmd" -o "$windows_cmd_tmp"
+  curl -fsSL "$BUILDA_AGENT_BASE/agent/builda-skill.md" -o "$skill_tmp"
+  mv "$skill_tmp" "$ROOT/SKILL.md"
+  mv "$cli_tmp" "$ROOT/builda"
+  mv "$windows_cli_tmp" "$ROOT/builda.ps1"
+  mv "$windows_cmd_tmp" "$ROOT/builda.cmd"
+  chmod +x "$ROOT/builda"
+  printf '%s\n' "$new_version" > "$RUNTIME_VERSION_FILE"
+  echo "self-update=updated"
+  echo "Agent registrations:"
+  sync_project_registrations
+}
+
+check_update() {
+  local remote effective sdkv
+  remote="$(remote_version)"
+  # 统一版本模型：CLI / skill / SDK 同源同版（agent/VERSION 单一版本号）
+  echo "builda-version=$VERSION"
+  echo "toolchain-version=$VERSION"
+  effective="$VERSION"
+  if [ -n "$remote" ]; then
+    echo "remote-version=$remote"
+    if [ "$remote" != "$VERSION" ]; then
+      self_update "$remote"
+      effective="$remote"
+    else
+      echo "self-update=current"
+    fi
+  else
+    echo "remote-version=unknown"
+    echo "self-update=skipped"
+  fi
+  [ -f "$ROOT/SKILL.md" ] && echo "skill=installed" || echo "skill=missing (run: builda update)"
+  if [ -f "$SDK_VERSION_FILE" ]; then
+    sdkv="$(head -n 1 "$SDK_VERSION_FILE" | tr -d '\r')"
+    echo "sdk-version=$sdkv"
+    if [ "$sdkv" = "$effective" ]; then
+      echo "sdk-sync=current"
+    else
+      echo "sdk-sync=behind (SDK 与工具链同一版本号，对齐: builda sdk install)"
+    fi
+  elif [ -d addons/builda ] || [ -d "$PROJECT_STATE_DIR/sdk/web" ]; then
+    echo "sdk-version=unknown (missing $SDK_VERSION_FILE; run: builda sdk install)"
+  else
+    echo "sdk=not-installed (仅上传任务可忽略；接 SDK 用: builda sdk install)"
+  fi
+}
+
+maybe_self_update() {
+  local first="${1:-}" remote
+  case "$first" in
+    ""|-h|--help|help|check|update|uninstall|version|--version|-v)
+      return 0
+      ;;
+  esac
+  [ "${BUILDA_DISABLE_AUTO_UPDATE:-}" = "1" ] && return 0
+  remote="$(remote_version)"
+  if [ -n "$remote" ] && [ "$remote" != "$VERSION" ]; then
+    echo "self-update-required=1" >&2
+    self_update "$remote" >&2
+    echo "builda-agent-skill-updated=1" >&2
+    echo "action=rerun-current-command-with-updated-cli-and-reread-skill" >&2
+    exec "$ROOT/builda" "$@"
+  fi
+}
+
+project_game_id() {
+  migrate_legacy_project_file
+  [ -f "$PROJECT_FILE" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '.gameId // empty' "$PROJECT_FILE"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$PROJECT_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    print(json.load(f).get("gameId", ""))
+PY
+  else
+    sed -n 's/.*"gameId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PROJECT_FILE" | head -1
+  fi
+}
+
+bundle_identity() {
+  local zip="$1" engine="$2"
+  need_python3
+  python3 - "$zip" "$engine" <<'PY'
+import hashlib
+import os
+import sys
+
+path = sys.argv[1]
+engine = sys.argv[2].strip().lower() or "godot"
+digest = hashlib.sha256()
+studio_digest = hashlib.sha256()
+with open(path, "rb") as bundle:
+    for block in iter(lambda: bundle.read(1024 * 1024), b""):
+        digest.update(block)
+        studio_digest.update(block)
+studio_digest.update(b"\0" + engine.encode("utf-8"))
+print(os.path.getsize(path))
+print(digest.hexdigest())
+print(studio_digest.hexdigest())
+PY
+}
+
+upload_idempotency_key() {
+  local engine="$1" game_id="$2" bundle_sha="$3"
+  python3 - "$engine" "$game_id" "$bundle_sha" <<'PY'
+import hashlib, sys
+engine, game_id, bundle_sha = sys.argv[1:]
+scope = "new" if not game_id else "game-" + hashlib.sha256(game_id.encode("utf-8")).hexdigest()[:16]
+print(f"build-{engine}-{scope}-{bundle_sha}")
+PY
+}
+
+draft_idempotency_key() {
+  local action="$1" game_id="$2" manifest_file="$3" existing_only="${4:-0}"
+  mkdir -p "$ROOT"
+  python3 - "$action" "$game_id" "$manifest_file" "$ROOT" "$existing_only" <<'PY'
+import hashlib
+import os
+import re
+import secrets
+import sys
+import time
+
+action, game_id, path, root, existing_only = sys.argv[1:]
+payload = hashlib.sha256()
+with open(path, "rb") as manifest:
+    for block in iter(lambda: manifest.read(1024 * 1024), b""):
+        payload.update(block)
+scope = "new" if not game_id else hashlib.sha256(game_id.encode("utf-8")).hexdigest()[:16]
+payload_hex = payload.hexdigest()
+fingerprint = hashlib.sha256(f"{action}\0{game_id}\0{payload_hex}".encode("utf-8")).hexdigest()
+receipt = os.path.join(root, f"last-draft-operation-{fingerprint}")
+prefix = f"draft-{action}-{scope}-{payload_hex}-"
+
+if existing_only == "1":
+    for _ in range(50):
+        try:
+            with open(receipt, "r", encoding="ascii") as saved:
+                operation = saved.read().strip()
+        except FileNotFoundError:
+            raise SystemExit(0)
+        except PermissionError:
+            operation = ""
+        if re.fullmatch(re.escape(prefix) + r"[0-9a-f]{32}", operation):
+            print(operation)
+            raise SystemExit(0)
+        time.sleep(0.02)
+    raise SystemExit(f"invalid or incomplete draft operation receipt: {receipt}; retry, or remove it if no publish is running")
+try:
+    fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+except FileExistsError:
+    operation = ""
+    for _ in range(50):
+        try:
+            with open(receipt, "r", encoding="ascii") as saved:
+                operation = saved.read().strip()
+        except (FileNotFoundError, PermissionError):
+            operation = ""
+        if re.fullmatch(re.escape(prefix) + r"[0-9a-f]{32}", operation):
+            break
+        time.sleep(0.02)
+    else:
+        raise SystemExit(f"invalid or incomplete draft operation receipt: {receipt}; retry, or remove it if no publish is running")
+else:
+    operation = prefix + secrets.token_hex(16)
+    with os.fdopen(fd, "w", encoding="ascii") as saved:
+        saved.write(operation + "\n")
+        saved.flush()
+        os.fsync(saved.fileno())
+print(operation)
+PY
+}
+
+complete_draft_operation() {
+  local operation_id="$1"
+  python3 - "$operation_id" "$ROOT" <<'PY'
+import glob
+import os
+import sys
+
+operation, root = sys.argv[1:]
+for receipt in glob.glob(os.path.join(root, "last-draft-operation-*")):
+    try:
+        with open(receipt, "r", encoding="ascii") as saved:
+            matches = saved.read().strip() == operation
+        if matches:
+            os.remove(receipt)
+            break
+    except FileNotFoundError:
+        continue
+PY
+}
+
+uploader_platform() {
+  local os_name arch_name
+  os_name="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch_name="$(uname -m | tr '[:upper:]' '[:lower:]')"
+  case "$os_name" in
+    darwin) os_name=darwin ;;
+    linux) os_name=linux ;;
+    mingw*|msys*|cygwin*) os_name=windows ;;
+    *) echo "Unsupported uploader OS: $os_name" >&2; return 1 ;;
+  esac
+  case "$arch_name" in
+    x86_64|amd64) arch_name=amd64 ;;
+    arm64|aarch64) arch_name=arm64 ;;
+    *) echo "Unsupported uploader architecture: $arch_name" >&2; return 1 ;;
+  esac
+  case "$os_name-$arch_name" in
+    darwin-amd64|darwin-arm64|linux-amd64|linux-arm64|windows-amd64|windows-arm64)
+      printf '%s-%s' "$os_name" "$arch_name"
+      ;;
+    *)
+      echo "Uploader Helper is not published for $os_name-$arch_name." >&2
+      return 1
+      ;;
+  esac
+}
+
+install_uploader_helper() {
+  local platform artifact sums expected directory binary tmp actual suffix=""
+  platform="$(uploader_platform)"
+  case "$platform" in windows-*) suffix=.exe ;; esac
+  artifact="builda-uploader-${platform}${suffix}"
+  sums="$(curl -fsS "$BUILDA_AGENT_BASE/agent/releases/$VERSION/SHA256SUMS")" || {
+    echo "Failed to download uploader checksums." >&2
+    return 1
+  }
+  expected="$(printf '%s\n' "$sums" | awk -v target="$artifact" '$2 == target {print $1; exit}')"
+  if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
+    echo "Uploader checksum is missing or invalid for $platform." >&2
+    return 1
+  fi
+  directory="$ROOT/tools/$expected/$platform"
+  binary="$directory/builda-uploader$suffix"
+  if [ -f "$binary" ]; then
+    actual="$(python3 - "$binary" <<'PY'
+import hashlib, sys
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as f:
+    for block in iter(lambda: f.read(1024 * 1024), b""):
+        h.update(block)
+print(h.hexdigest())
+PY
+)"
+    if [ "$actual" = "$expected" ]; then
+      printf '%s' "$binary"
+      return 0
+    fi
+  fi
+  mkdir -p "$directory"
+  tmp="$directory/.download-$$"
+  rm -f "$tmp"
+  if ! curl -fsS "$BUILDA_AGENT_BASE/agent/releases/$VERSION/$artifact" -o "$tmp"; then
+    rm -f "$tmp"
+    echo "Failed to download uploader helper for $platform." >&2
+    return 1
+  fi
+  actual="$(python3 - "$tmp" <<'PY'
+import hashlib, sys
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as f:
+    for block in iter(lambda: f.read(1024 * 1024), b""):
+        h.update(block)
+print(h.hexdigest())
+PY
+)"
+  if [ "$actual" != "$expected" ]; then
+    rm -f "$tmp"
+    echo "Uploader helper checksum mismatch." >&2
+    return 1
+  fi
+  chmod 700 "$tmp"
+  mv -f "$tmp" "$binary"
+  printf '%s' "$binary"
+}
+
+create_upload_session() {
+  local zip="$1" engine="$2" game_id="$3" expected_size="$4" expected_sha="$5" idempotency="$6" studio_payload_hash="$7"
+  local request_body
+  request_body="$(python3 - "$engine" "$game_id" "$expected_size" "$expected_sha" "$idempotency" "$studio_payload_hash" <<'PY'
+import json, sys
+body = {
+    "engine": sys.argv[1], "gameId": sys.argv[2], "expectedSize": int(sys.argv[3]),
+    "expectedSha256": sys.argv[4], "idempotencyKey": sys.argv[5],
+}
+if sys.argv[6]:
+    body["studioPayloadHash"] = sys.argv[6]
+print(json.dumps(body, separators=(",", ":")))
+PY
+)"
+  local -a request_args=(
+    -X POST
+    "$BUILDA_BASE/api/v1/uploads/build/sessions"
+    -H "Idempotency-Key: $idempotency"
+    -H 'Content-Type: application/json'
+    --data-binary "$request_body"
+  )
+  if [ -n "${BUILDA_PUBLISH_OPERATION_ID:-}" ]; then
+    request_args+=(
+      -H "X-Builda-Studio-Publish-Id: $BUILDA_PUBLISH_OPERATION_ID"
+      -H "X-Builda-Publish-Lease-Id: ${BUILDA_PUBLISH_LEASE_ID:?missing publish lease}"
+      -H "X-Builda-Publish-Attempt: ${BUILDA_PUBLISH_ATTEMPT:?missing publish attempt}"
+    )
+  fi
+  authenticated_http_response "create upload session" "${request_args[@]}" || return $?
+  SESSION_HTTP_STATUS="$AUTH_HTTP_STATUS"
+  SESSION_BODY="$AUTH_HTTP_BODY"
+}
+
+legacy_upload_build() {
+  local zip="$1" engine="$2"
+  if [ -n "${BUILDA_PUBLISH_OPERATION_ID:-}" ]; then
+    authenticated_http_request "upload build" -X POST "$BUILDA_BASE/api/v1/uploads/build" \
+      -H "Idempotency-Key: $BUILDA_PUBLISH_OPERATION_ID" \
+      -H "X-Builda-Studio-Publish-Id: $BUILDA_PUBLISH_OPERATION_ID" \
+      -H "X-Builda-Publish-Lease-Id: ${BUILDA_PUBLISH_LEASE_ID:?missing publish lease}" \
+      -H "X-Builda-Publish-Attempt: ${BUILDA_PUBLISH_ATTEMPT:?missing publish attempt}" \
+      -F "file=@$zip" -F "engine=$engine"
+  else
+    authenticated_http_request "upload build" -X POST "$BUILDA_BASE/api/v1/uploads/build" \
+      -F "file=@$zip" -F "engine=$engine"
+  fi
+}
+
+run_session_upload() {
+  local zip="$1" engine="$2" game_id="$3" expected_size="$4" expected_sha="$5" idempotency="$6" studio_payload_hash="$7"
+  local helper status
+  create_upload_session "$zip" "$engine" "$game_id" "$expected_size" "$expected_sha" "$idempotency" "$studio_payload_hash"
+  case "$SESSION_HTTP_STATUS" in
+    200|201) ;;
+    404|405)
+      if [ "$expected_size" -le 209715200 ]; then
+        echo "upload-session=unsupported; falling back to the legacy <=200MiB upload" >&2
+        legacy_upload_build "$zip" "$engine"
+        return
+      fi
+      echo "This server does not support resumable upload, and the bundle exceeds the legacy 200MiB limit." >&2
+      return 1
+      ;;
+    *)
+      echo "create upload session failed: HTTP $SESSION_HTTP_STATUS" >&2
+      printf '%s\n' "$SESSION_BODY" >&2
+      return 1
+      ;;
+  esac
+  status="$(printf '%s' "$SESSION_BODY" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status", ""))')" || return 1
+  if [ "$status" = "ready" ]; then
+    printf '%s' "$SESSION_BODY" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["result"], ensure_ascii=False, separators=(",", ":")))'
+    return
+  fi
+  case "$status" in
+    created|uploading|uploaded|validating|promoting|retry_wait) ;;
+    *)
+      echo "Upload session cannot continue: status=$status" >&2
+      printf '%s\n' "$SESSION_BODY" >&2
+      return 1
+      ;;
+  esac
+  helper="$(install_uploader_helper)"
+  printf '%s' "$SESSION_BODY" | \
+    BUILDA_UPLOAD_FILE="$zip" BUILDA_UPLOAD_ENGINE="$engine" \
+    BUILDA_UPLOAD_OS="$(uploader_platform | cut -d- -f1)" \
+    BUILDA_UPLOAD_ARCH="$(uploader_platform | cut -d- -f2)" \
+    BUILDA_UPLOAD_AGENT_VERSION="$VERSION" \
+    python3 -c 'import json,os,sys; session=json.load(sys.stdin); print(json.dumps({"schemaVersion":1,"file":os.environ["BUILDA_UPLOAD_FILE"],"agentVersion":os.environ["BUILDA_UPLOAD_AGENT_VERSION"],"helperVersion":os.environ["BUILDA_UPLOAD_AGENT_VERSION"],"os":os.environ["BUILDA_UPLOAD_OS"],"arch":os.environ["BUILDA_UPLOAD_ARCH"],"session":session}, separators=(",", ":")))' | \
+    "$helper"
+}
+
+query_upload_session() {
+  local session_id="$1" body_file status body
+  [ -n "$session_id" ] || { echo "Usage: builda upload-status <session>" >&2; return 1; }
+  body_file="$(mktemp)"
+  local -a request_args=(
+    -X POST
+    "$BUILDA_BASE/api/v1/uploads/build/sessions/$session_id/inspect"
+  )
+  if [ -n "${BUILDA_PUBLISH_OPERATION_ID:-}" ]; then
+    request_args+=(
+      -H "Idempotency-Key: $BUILDA_PUBLISH_OPERATION_ID"
+      -H "X-Builda-Studio-Publish-Id: $BUILDA_PUBLISH_OPERATION_ID"
+      -H "X-Builda-Publish-Lease-Id: ${BUILDA_PUBLISH_LEASE_ID:?missing publish lease}"
+      -H "X-Builda-Publish-Attempt: ${BUILDA_PUBLISH_ATTEMPT:?missing publish attempt}"
+    )
+  fi
+  authenticated_http_response "query upload session" "${request_args[@]}" || { rm -f "$body_file"; return 1; }
+  status="$AUTH_HTTP_STATUS"
+  body="$AUTH_HTTP_BODY"
+  rm -f "$body_file"
+  if [ "$status" != "200" ]; then
+    echo "query upload session failed: HTTP $status" >&2
+    printf '%s\n' "$body" >&2
+    return 1
+  fi
+  printf '%s' "$body" | python3 -c 'import json,sys; d=json.load(sys.stdin); parts=d.get("parts") or []; out={k:d[k] for k in ("id","status","engine","expectedSize","effectiveLimitBytes","expiresAt","errorCode","errorMessage","result") if k in d}; out["uploadedBytes"]=sum(int(p.get("size",0)) for p in parts); print(json.dumps(out,ensure_ascii=False,separators=(",",":")))'
+}
+
+cancel_upload_session() {
+  local session_id="${1:-}"
+  [ -n "$session_id" ] || { echo "Usage: builda upload-cancel <session>" >&2; return 1; }
+  local body_file status body
+  body_file="$(mktemp)"
+  local -a request_args=(
+    -X POST
+    "$BUILDA_BASE/api/v1/uploads/build/sessions/$session_id/cancel"
+  )
+  if [ -n "${BUILDA_PUBLISH_OPERATION_ID:-}" ]; then
+    request_args+=(
+      -H "Idempotency-Key: ${BUILDA_PUBLISH_OPERATION_ID}"
+      -H "X-Builda-Studio-Publish-Id: ${BUILDA_PUBLISH_OPERATION_ID}"
+      -H "X-Builda-Publish-Lease-Id: ${BUILDA_PUBLISH_LEASE_ID:?missing publish lease}"
+      -H "X-Builda-Publish-Attempt: ${BUILDA_PUBLISH_ATTEMPT:?missing publish attempt}"
+    )
+  fi
+  authenticated_http_response "cancel upload session" "${request_args[@]}" || { rm -f "$body_file"; return 1; }
+  status="$AUTH_HTTP_STATUS"
+  body="$AUTH_HTTP_BODY"
+  rm -f "$body_file"
+  if [ "$status" != "204" ]; then
+    echo "cancel upload session failed: HTTP $status" >&2
+    printf '%s\n' "$body" >&2
+    return 1
+  fi
+}
+
+migrate_legacy_project_file() {
+  if [ ! -f "$PROJECT_FILE" ] && [ -f "$LEGACY_PROJECT_FILE" ]; then
+    mkdir -p "$(dirname "$PROJECT_FILE")"
+    cp "$LEGACY_PROJECT_FILE" "$PROJECT_FILE"
+  fi
+}
+
+manifest_title() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '.title // empty' "$file"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    print(json.load(f).get("title", ""))
+PY
+  else
+    sed -n 's/.*"title"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1
+  fi
+}
+
+write_project_game() {
+  local game_id="$1"
+  local title="${2:-}"
+  local version_id="${3:-}"
+  [ -n "$game_id" ] || return 0
+  mkdir -p "$(dirname "$PROJECT_FILE")"
+  local updated_at
+  updated_at="$(($(date +%s) * 1000))"
+  if command -v jq >/dev/null 2>&1; then
+    jq -n \
+      --arg provider "builda-h5" \
+      --arg gameId "$game_id" \
+      --arg title "$title" \
+      --arg lastVersionId "$version_id" \
+      --argjson updatedAt "$updated_at" \
+      '{provider:$provider,gameId:$gameId,title:$title,lastVersionId:$lastVersionId,updatedAt:$updatedAt}' > "$PROJECT_FILE"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$PROJECT_FILE" "$game_id" "$title" "$version_id" "$updated_at" <<'PY'
+import json
+import sys
+
+path, game_id, title, version_id, updated_at = sys.argv[1:6]
+data = {
+    "provider": "builda-h5",
+    "gameId": game_id,
+    "title": title,
+    "lastVersionId": version_id,
+    "updatedAt": int(updated_at),
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(data, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
+  else
+    echo "warning: jq or python3 required to write $PROJECT_FILE" >&2
+    return 0
+  fi
+  echo "project-binding=$PROJECT_FILE" >&2
+}
+
+bundle_check() {
+  local webview_compat="${BUILDA_WEBVIEW_COMPAT:-0}" zip="" engine=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --webview-compatible)
+        webview_compat="1"
+        shift
+        ;;
+      --engine)
+        engine="${2:-}"
+        shift 2
+        ;;
+      --engine=*)
+        engine="${1#--engine=}"
+        shift
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        echo "Unknown bundle-check option: $1" >&2
+        echo "Usage: builda bundle-check [--engine godot|h5|unity] [--webview-compatible] <zip>" >&2
+        exit 1
+        ;;
+      *)
+        zip="$1"
+        shift
+        break
+        ;;
+    esac
+  done
+  [ -n "$zip" ] || zip="${1:-}"
+  [ -f "$zip" ] || { echo "zip file required" >&2; exit 1; }
+  [ -n "$engine" ] || engine="$(manifest_engine "$MANIFEST")"
+  case "$engine" in
+    godot|h5|unity) ;;
+    *) echo "bundle-check engine must be godot, h5 or unity: $engine" >&2; exit 1 ;;
+  esac
+  need_python3
+  # 校验口径与后端 buildzip 一致（单一真相源：h5_bundle_spec.md 附表 B）：
+  # godot = 三件套 + Godot 黑名单 + threads/COI/wasm 内存；h5 = 仅入口 + 通用黑名单 +
+  # sourcemap/node_modules 禁用，跳过 Godot 专属正则；unity = Build/ 四件套（后缀匹配，
+  # 允许 .unityweb）+ Unity 工程黑名单 + StreamingAssets 扩展名豁免，禁用规则同 h5。
+  python3 - "$zip" "$webview_compat" "$engine" <<'PY'
+import pathlib
+import re
+import stat
+import sys
+import zipfile
+
+zip_path = sys.argv[1]
+webview_compat = sys.argv[2] == "1"
+engine = sys.argv[3]
+max_wasm_memory = 1 << 30
+required = {"index.html", "index.js", "index.wasm", "index.pck"} if engine == "godot" else {"index.html"}
+# 扩展名白名单：与后端 buildzip godot/h5/unity 集合一致（h5_bundle_spec.md 附表 B，三处同步改）
+godot_ext = {
+    ".html", ".js", ".wasm", ".pck",
+    ".png", ".jpg", ".jpeg", ".webp", ".svg",
+    ".ico", ".json", ".css", ".txt", ".md",
+}
+h5_ext = godot_ext | {
+    ".mjs", ".woff", ".woff2", ".ttf", ".otf",
+    ".mp3", ".ogg", ".wav", ".m4a", ".mp4", ".webm",
+    ".avif", ".gif", ".bin", ".dat",
+    ".glsl", ".frag", ".vert", ".atlas", ".fnt",
+    ".xml", ".gltf", ".glb", ".ktx2", ".basis",
+}
+unity_ext = h5_ext | {".unityweb", ".data"}
+allowed_ext = {"godot": godot_ext, "h5": h5_ext, "unity": unity_ext}[engine]
+# unity 的 Build/ 四件套（文件名带构建名变量，只做前缀+后缀匹配，附表 B.7）
+unity_found = {"loader.js": False, "framework.js": False, "wasm": False, "data": False}
+found = set()
+forbidden = []
+bad_ext = []
+sdk_found = False
+index_html = ""
+index_js = ""
+wasm_size = 0
+
+def clean_name(name: str) -> str:
+    clean = name[2:] if name.startswith("./") else name
+    clean = clean.rstrip("/")
+    pure = pathlib.PurePosixPath(clean)
+    if name.startswith("/") or "\\" in name or ":" in name or ".." in pure.parts:
+        raise SystemExit(f"Unsafe zip path: {name}")
+    return clean
+
+with zipfile.ZipFile(zip_path) as z:
+    infos = z.infolist()
+    if len(infos) > 1000:
+        raise SystemExit("Too many ZIP entries: max 1000 (files and directories)")
+    has_index_js = False
+    file_count = 0
+    total_uncompressed = 0
+    for info in infos:
+        if info.is_dir():
+            continue
+        file_count += 1
+        if file_count > 500:
+            raise SystemExit("Too many bundle files: max 500")
+        if info.file_size > 768 * 1024 * 1024:
+            raise SystemExit(f"Bundle file exceeds 768MiB uncompressed: {info.filename}")
+        total_uncompressed += info.file_size
+        if total_uncompressed > 1024 * 1024 * 1024:
+            raise SystemExit("Bundle exceeds 1GiB total uncompressed size")
+        clean = clean_name(info.filename)
+        mode = (info.external_attr >> 16) & 0o170000
+        if mode == stat.S_IFLNK:
+            raise SystemExit(f"Symlink is forbidden: {clean}")
+        parts = pathlib.PurePosixPath(clean).parts
+        name = pathlib.PurePosixPath(clean).name
+        suffix = pathlib.PurePosixPath(clean).suffix.lower()
+        if clean in required:
+            found.add(clean)
+        if clean == "index.js":
+            has_index_js = True
+        if clean in {"addons/builda/web/builda-sdk.js", "builda-sdk.js"}:
+            sdk_found = True
+        if suffix == ".wasm":
+            wasm_size = max(wasm_size, info.file_size)
+        if clean == "addons/builda/web/builda-sdk.d.ts" or name.endswith(".d.ts") or name == "builda-dev-shell.html":
+            forbidden.append(clean)
+        if name in {"project.godot", "export_presets.cfg", ".env"} or name.endswith(".import"):
+            forbidden.append(clean)
+        if any(part in {".godot", ".git", ".svn", ".hg", "__MACOSX"} for part in parts):
+            forbidden.append(clean)
+        if engine != "godot":
+            if name.endswith(".map"):
+                forbidden.append(clean + " (sourcemap leaks sources; disable sourcemaps and rebuild)")
+            if "node_modules" in parts:
+                forbidden.append(clean + " (node_modules must not be zipped)")
+        if engine == "unity":
+            if name.endswith((".meta", ".csproj", ".sln", ".unity")):
+                forbidden.append(clean + " (Unity project/editor files must not be zipped)")
+            if any(part in {"Library", "Temp", "Obj", "ProjectSettings"} for part in parts):
+                forbidden.append(clean + " (Unity project directories must not be zipped)")
+            if clean.startswith("Build/"):
+                if clean.endswith(".loader.js"):
+                    unity_found["loader.js"] = True
+                elif clean.endswith((".framework.js", ".framework.js.unityweb")):
+                    unity_found["framework.js"] = True
+                elif clean.endswith((".wasm", ".wasm.unityweb")):
+                    unity_found["wasm"] = True
+                elif clean.endswith((".data", ".data.unityweb")):
+                    unity_found["data"] = True
+        # unity 的 StreamingAssets/ 跳过扩展名白名单（AssetBundle 惯例常无扩展名，附表 B.3）；
+        # 禁用清单/符号链接/zip slip 照常执行
+        streaming_exempt = engine == "unity" and clean.startswith("StreamingAssets/")
+        if not streaming_exempt and suffix not in allowed_ext:
+            bad_ext.append(clean)
+    missing = sorted(required - found)
+    if missing:
+        raise SystemExit("Missing root " + ", ".join(missing))
+    if engine == "unity":
+        missing_unity = sorted(k for k, ok in unity_found.items() if not ok)
+        if missing_unity:
+            raise SystemExit("Missing Build/ Unity WebGL artifacts (*." + ", *.".join(missing_unity) + "; .unityweb suffix allowed). Re-export with the default Build/ output layout.")
+    if forbidden:
+        raise SystemExit("Forbidden project/editor files: " + ", ".join(forbidden))
+    if bad_ext:
+        raise SystemExit("File types not allowed for engine=" + engine + ": " + ", ".join(bad_ext))
+    if sdk_found:
+        # 旧形态（SDK 焊在包内）继续放行；新形态 zip 不含 SDK，由宿主按 manifest sdk 版本注入
+        print("bundle-sdk=embedded (legacy form; new exports ship without SDK, host injects by manifest)")
+    with z.open("index.html") as f:
+        index_html = f.read(1024 * 1024).decode("utf-8", "ignore")
+    if engine == "godot" and has_index_js:
+        with z.open("index.js") as f:
+            index_js = f.read(4 * 1024 * 1024).decode("utf-8", "ignore")
+
+if "builda-sdk.js" not in index_html:
+    if engine == "godot":
+        raise SystemExit("index.html does not load builda-sdk.js. Ensure Godot Web export head include injects the SDK script.")
+    if engine == "unity":
+        raise SystemExit('index.html does not load builda-sdk.js. Select the Builda WebGL Template (Player Settings -> Resolution and Presentation; installed by builda sdk install), or add <script src="builda-sdk.js"></script> to your custom template head, then rebuild.')
+    raise SystemExit('index.html does not load builda-sdk.js. Add <script src="builda-sdk.js"></script> to the HTML head and rebuild.')
+if wasm_size > max_wasm_memory:
+    raise SystemExit(f"wasm file exceeds 1GiB: {wasm_size} bytes")
+
+print("bundle=ok")
+print("bundle-engine=" + engine)
+print("sdk-injected=ok")
+
+if engine == "godot":
+    # Godot 专属：threads/COI 导出模板变量与 Emscripten 内存正则（h5 跳过，误报不可控）
+    threads_enabled = bool(re.search(r"\bGODOT_THREADS_ENABLED\s*=\s*true\b", index_html) or re.search(r"\bGODOT_THREADS_ENABLED\s*=\s*true\b", index_js))
+    coi_enabled = bool(re.search(r"\bensureCrossOriginIsolationHeaders\s*:\s*true\b", index_html) or re.search(r"\bensureCrossOriginIsolationHeaders\s*:\s*true\b", index_js))
+    if webview_compat:
+        if threads_enabled:
+            raise SystemExit("Godot Web export has threads enabled. For WebView compatibility mode, set variant/thread_support=false and re-export.")
+        if coi_enabled:
+            raise SystemExit("Godot Web export requests cross-origin isolation headers. For WebView compatibility mode, set progressive_web_app/ensure_cross_origin_isolation_headers=false and re-export.")
+
+    checks = [
+        (r"\bINITIAL_MEMORY\b\s*[:=]\s*(\d+)", "INITIAL_MEMORY", "bytes"),
+        (r"\binitialMemory\b\s*[:=]\s*(\d+)", "initialMemory", "bytes"),
+        (r"\bwasmMemory\b\s*[:=]\s*(\d+)", "wasmMemory", "bytes"),
+        (r"WebAssembly\.Memory\s*\(\s*\{[^}]*\binitial\b\s*:\s*(\d+)", "WebAssembly.Memory.initial", "pages"),
+    ]
+    detected = []
+    for pattern, label, unit in checks:
+        for raw in re.findall(pattern, index_js):
+            value = int(raw)
+            bytes_value = value * 65536 if unit == "pages" else value
+            detected.append((label, bytes_value))
+            if bytes_value > max_wasm_memory:
+                raise SystemExit(f"WASM memory exceeds 1GiB: {label}={bytes_value} bytes")
+
+    print("threads-check=" + ("webview-compatible" if webview_compat else "default-allowed"))
+    if detected:
+        print("wasm-memory-check=ok")
+    else:
+        print("wasm-memory-check=unknown")
+        print("wasm-memory-hint=No explicit WebAssembly memory setting was found in index.js; upload will still enforce the 1GiB bundle/runtime limit.")
+PY
+  # 非阻断提示：zip 超 50MiB 建议做包体优化；只提示、不改变服务端动态上传上限。
+  local zip_bytes
+  zip_bytes=$(wc -c < "$zip" | tr -d '[:space:]')
+  echo "bundle-zip-bytes=$zip_bytes"
+  if [ "$zip_bytes" -gt 52428800 ]; then
+    echo "bundle-size-hint=zip 已达 $((zip_bytes / 1048576))MiB（>50MiB）。必须评估分包/资源外置优化；建议阅读 $BUILDA_AGENT_BASE/agent/releases/$VERSION/md_bundle_size.md（大资源外置 res/**、音频/字体/纹理瘦身）。该提示不阻断上传。" >&2
+  fi
+}
+
+builda_dev_parse() {
+  local web="" port="18088" game_id="local-game" safearea="" assets=""
+  local mode="${1:-serve}"
+  if [ "$mode" = "e2e" ]; then
+    echo "dev-e2e=removed" >&2
+    echo "builda dev e2e 已移除：它只重复断言 SDK 内置 mock 行为。改用 builda dev 起本地运行器，在浏览器里跑真实游戏验证。" >&2
+    exit 1
+  fi
+  if [ "$mode" = "serve" ]; then
+    shift || true
+  else
+    mode="serve"
+  fi
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --web)
+        web="${2:-}"
+        shift 2
+        ;;
+      --web=*)
+        web="${1#--web=}"
+        shift
+        ;;
+      --port)
+        port="${2:-}"
+        shift 2
+        ;;
+      --port=*)
+        port="${1#--port=}"
+        shift
+        ;;
+      --game-id)
+        game_id="${2:-}"
+        shift 2
+        ;;
+      --game-id=*)
+        game_id="${1#--game-id=}"
+        shift
+        ;;
+      --safearea)
+        safearea="${2:-}"
+        shift 2
+        ;;
+      --safearea=*)
+        safearea="${1#--safearea=}"
+        shift
+        ;;
+      --assets)
+        assets="${2:-}"
+        shift 2
+        ;;
+      --assets=*)
+        assets="${1#--assets=}"
+        shift
+        ;;
+      ""|-h|--help|help)
+        echo "Usage: builda dev --web <dir|zip> [--assets <dir|zip>] [--port 18088] [--game-id local-game] [--safearea 44,0,34,0]"
+        return 0
+        ;;
+      *)
+        echo "Unknown dev arg: $1" >&2
+        echo "Usage: builda dev --web <dir|zip> [--assets <dir|zip>] [--port 18088] [--game-id local-game] [--safearea 44,0,34,0]" >&2
+        exit 1
+        ;;
+    esac
+  done
+  [ -n "$web" ] || { echo "Usage: builda dev --web <dir|zip> [--port 18088]" >&2; exit 1; }
+  [ -e "$web" ] || { echo "dev web path not found: $web" >&2; exit 1; }
+  # assets 兜底源：未显式指定时探测项目根 ./assets（audio|res 顶层子树，与 assets.zip 同布局）
+  if [ -z "$assets" ] && { [ -d "assets/audio" ] || [ -d "assets/res" ]; }; then
+    assets="assets"
+  fi
+  if [ -n "$assets" ] && [ ! -e "$assets" ]; then
+    echo "dev assets path not found: $assets" >&2
+    exit 1
+  fi
+  builda_dev_serve "$web" "$port" "$game_id" "$safearea" "$assets"
+}
+
+builda_dev_serve() {
+  local web="$1" port="$2" game_id="$3" safearea="${4:-}" assets="${5:-}"
+  need_python3
+  BUILDA_DEV_STATE_DIR="$PROJECT_STATE_DIR" python3 - "$web" "$port" "$game_id" "$safearea" "$assets" <<'PY'
+import mimetypes
+import os
+import pathlib
+import posixpath
+import shutil
+import sys
+import tempfile
+import urllib.parse
+import zipfile
+from functools import partial
+from http import HTTPStatus
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+source = pathlib.Path(sys.argv[1]).expanduser().resolve()
+state_dir = os.environ.get("BUILDA_DEV_STATE_DIR") or ".builda-agent"
+try:
+    port = int(sys.argv[2])
+except ValueError:
+    raise SystemExit("dev port must be an integer")
+game_id = sys.argv[3] or "local-game"
+safe_area = sys.argv[4] if len(sys.argv) > 4 else ""
+assets_arg = sys.argv[5] if len(sys.argv) > 5 else ""
+def _csv4_ok(value: str) -> bool:
+    parts = value.split(",")
+    if len(parts) != 4:
+        return False
+    try:
+        return all(float(p) >= 0 for p in parts)
+    except ValueError:
+        return False
+if safe_area and not _csv4_ok(safe_area):
+    raise SystemExit("dev --safearea must be top,right,bottom,left in CSS px, e.g. 44,0,34,0")
+if port < 0 or port > 65535:
+    raise SystemExit("dev port must be between 0 and 65535")
+
+temp_dirs = []
+web_root = source
+
+def safe_extract(zip_path: pathlib.Path, prefix: str = "builda-dev-web-") -> pathlib.Path:
+    td = tempfile.TemporaryDirectory(prefix=prefix)
+    temp_dirs.append(td)
+    dst = pathlib.Path(td.name)
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            name = info.filename
+            pure = pathlib.PurePosixPath(name)
+            if name.startswith("/") or "\\" in name or ":" in name or ".." in pure.parts:
+                raise SystemExit(f"Unsafe zip path: {name}")
+            if info.is_dir():
+                continue
+            target = dst / pathlib.Path(*pure.parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, target.open("wb") as out:
+                shutil.copyfileobj(src, out)
+    return dst
+
+if source.is_file():
+    if source.suffix.lower() != ".zip":
+        raise SystemExit("dev --web file must be a .zip H5 bundle")
+    web_root = safe_extract(source)
+elif not source.is_dir():
+    raise SystemExit("dev --web must be a directory or zip")
+
+index = web_root / "index.html"
+if not index.is_file():
+    raise SystemExit(f"dev web root missing index.html: {web_root}")
+
+# assets 兜底源（audio/**、res/**，与 assets.zip 同布局）：CP 不用再把资源拷进构建目录，
+# mock SDK 按页面目录解析出的 /audio/... /res/... 请求在 web root 缺文件时由这里补上
+assets_root = None
+if assets_arg:
+    assets_source = pathlib.Path(assets_arg).expanduser().resolve()
+    if assets_source.is_file():
+        if assets_source.suffix.lower() != ".zip":
+            raise SystemExit("dev --assets file must be a .zip assets bundle")
+        assets_root = safe_extract(assets_source, prefix="builda-dev-assets-")
+    elif assets_source.is_dir():
+        assets_root = assets_source
+    else:
+        raise SystemExit(f"dev --assets must be a directory or zip: {assets_source}")
+
+# mock SDK 兜底查找顺序：web 导出目录 → Godot addon（addons/builda/web/）→
+# HTML5/Unity 工具链落点（<state_dir>/sdk/web/）
+def first_file(*candidates):
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+project_sdk_js = first_file(
+    pathlib.Path.cwd() / "addons" / "builda" / "web" / "builda-sdk.js",
+    pathlib.Path.cwd() / state_dir / "sdk" / "web" / "builda-sdk.js",
+)
+sdk_present = (web_root / "addons" / "builda" / "web" / "builda-sdk.js").is_file() or (web_root / "builda-sdk.js").is_file() or project_sdk_js is not None
+# 测试外壳随 mock SDK 装进项目，web 导出里不会有；从项目目录兜底 serve
+project_shell = first_file(
+    pathlib.Path.cwd() / "addons" / "builda" / "web" / "builda-dev-shell.html",
+    pathlib.Path.cwd() / state_dir / "sdk" / "web" / "builda-dev-shell.html",
+)
+shell_present = (web_root / "builda-dev-shell.html").is_file() or project_shell is not None
+# BuildaMic 分析 worker 同理从项目目录兜底；正式打包必须随 zip 分发
+project_mic_worker = first_file(
+    pathlib.Path.cwd() / "addons" / "builda" / "mic" / "web" / "builda-mic-worker.js",
+    pathlib.Path.cwd() / state_dir / "sdk" / "web" / "mic" / "builda-mic-worker.js",
+)
+mic_worker_in_project = project_mic_worker is not None
+mic_worker_in_web = (web_root / "addons" / "builda" / "mic" / "web" / "builda-mic-worker.js").is_file()
+
+mimetypes.add_type("application/wasm", ".wasm")
+mimetypes.add_type("application/octet-stream", ".pck")
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("audio/ogg", ".ogg")
+mimetypes.add_type("model/gltf-binary", ".glb")
+mimetypes.add_type("image/ktx2", ".ktx2")
+
+def entry_query() -> str:
+    query = {"gameId": game_id}
+    if safe_area:
+        query["builda_mock_safearea"] = safe_area
+    return urllib.parse.urlencode(query)
+
+entry_path = f"/index.html?{entry_query()}"
+shell_path = f"/builda-dev-shell.html?{entry_query()}"
+
+class DevHandler(SimpleHTTPRequestHandler):
+    server_version = "BuildaDev/1"
+
+    def end_headers(self):
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
+        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
+        super().end_headers()
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = posixpath.normpath(urllib.parse.unquote(parsed.path))
+        if path in ("/builda-sdk.js", "/addons/builda/web/builda-sdk.js"):
+            target = pathlib.Path(self.directory) / path.lstrip("/")
+            if not target.is_file() and project_sdk_js is not None:
+                data = project_sdk_js.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/javascript")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+        if path.startswith("/addons/builda/mic/web/") or path == "/mic/builda-mic-worker.js":
+            # BuildaMic worker 兜底：web 导出目录没有时，从项目目录/工具链目录 serve（路径已 normpath 去 ..）
+            target = pathlib.Path(self.directory) / path.lstrip("/")
+            candidate = first_file(
+                pathlib.Path.cwd() / path.lstrip("/"),
+                project_mic_worker if project_mic_worker is not None else pathlib.Path("/nonexistent"),
+            )
+            if not target.is_file() and candidate is not None:
+                data = candidate.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", mimetypes.guess_type(path)[0] or "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+        if assets_root is not None and (path.startswith("/audio/") or path.startswith("/res/")):
+            # assets 兜底：web root 没有该文件时从项目 assets 源伺服（路径已 normpath 去 ..）
+            target = pathlib.Path(self.directory) / path.lstrip("/")
+            candidate = assets_root / path.lstrip("/")
+            if not target.is_file() and candidate.is_file():
+                data = candidate.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", mimetypes.guess_type(path)[0] or "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+        if path == "/builda-dev-shell.html":
+            target = pathlib.Path(self.directory) / "builda-dev-shell.html"
+            if not target.is_file() and project_shell is not None:
+                data = project_shell.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+        if path in ("", "/"):
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", shell_path if shell_present else entry_path)
+            self.end_headers()
+            return
+        super().do_GET()
+
+def make_server(start_port: int):
+    candidates = [0] if start_port == 0 else range(start_port, min(start_port + 21, 65536))
+    last_error = None
+    handler = partial(DevHandler, directory=str(web_root))
+    for candidate in candidates:
+        try:
+            return ThreadingHTTPServer(("127.0.0.1", candidate), handler)
+        except OSError as exc:
+            last_error = exc
+    raise SystemExit(f"could not bind localhost port {start_port}: {last_error}")
+
+httpd = make_server(port)
+actual_port = httpd.server_address[1]
+base = f"http://127.0.0.1:{actual_port}"
+print("dev=ok", flush=True)
+print(f"dev-url={base}{shell_path if shell_present else entry_path}", flush=True)
+print(f"game-url={base}{entry_path}", flush=True)
+print("sdk-mode=local-mock", flush=True)
+print(f"dev-shell={'present' if shell_present else 'missing'}", flush=True)
+print(f"dev-sdk={'present' if sdk_present else 'missing'}", flush=True)
+print(f"dev-web={web_root}", flush=True)
+if assets_root is not None:
+    print(f"dev-assets={assets_root} (audio/**, res/** served as a same-origin fallback; keep them out of the build dir and the bundle zip)", flush=True)
+else:
+    print("dev-assets=none (games using Builda.audio.* / assets.url(): pass --assets <dir|zip> or keep audio/, res/ under ./assets/ at the project root)", flush=True)
+print("dev-mock-player=local-player (append &builda_mock_player=<id>&builda_mock_name=<name> to the URL to switch identity)", flush=True)
+if not shell_present:
+    print("dev-shell-warning=builda-dev-shell.html not found; run sdk install to get the test shell (orientation/notch/capsule/pay/ad mock).", flush=True)
+if not sdk_present:
+    print("dev-warning=builda-sdk.js not found in web root or project; run sdk install (dev server serves the project copy automatically).", flush=True)
+if mic_worker_in_project and not mic_worker_in_web:
+    print("dev-mic=served-from-project (games using BuildaMic must copy addons/builda/mic/web/ into the export dir before zipping; dev server only covers local runs)", flush=True)
+try:
+    httpd.serve_forever()
+except KeyboardInterrupt:
+    print("dev=stopped reason=interrupt", flush=True)
+finally:
+    httpd.server_close()
+    for td in temp_dirs:
+        td.cleanup()
+PY
+}
+
+manifest_string_field() {
+  local file="$1" field="$2"
+  [ -f "$file" ] || return 0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r ".$field // empty" "$file"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$file" "$field" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+print(data.get(sys.argv[2], "") or "")
+PY
+  else
+    sed -n "s/.*\"$field\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$file" | head -1
+  fi
+}
+
+assets_check_zip() {
+  local zip="$1"
+  [ -f "$zip" ] || { echo "assets.zip file required" >&2; exit 1; }
+  need_python3
+  python3 - "$zip" <<'PY'
+import pathlib
+import stat
+import sys
+import zipfile
+
+zip_path = sys.argv[1]
+audio_allowed = {".mp3", ".ogg", ".wav"}
+res_allowed = {".glb", ".gltf", ".bin", ".ktx2", ".png", ".jpg", ".jpeg", ".webp", ".json", ".bundle", ".hash", ".pck"}
+pck_count = 0
+count = 0
+total = 0
+with zipfile.ZipFile(zip_path) as z:
+    for info in z.infolist():
+        name = info.filename
+        if info.is_dir():
+            continue
+        pure = pathlib.PurePosixPath(name)
+        parts = pure.parts
+        if name.startswith("/") or "\\" in name or ":" in name or ".." in parts:
+            raise SystemExit(f"Unsafe asset path: {name}")
+        mode = (info.external_attr >> 16) & 0o170000
+        if mode == stat.S_IFLNK:
+            raise SystemExit(f"Symlink is forbidden: {name}")
+        if not parts or parts[0] not in {"audio", "res"}:
+            raise SystemExit(f"Asset must be under audio/ or res/: {name}")
+        if parts[0] == "audio" and pure.suffix.lower() not in audio_allowed:
+            raise SystemExit(f"Only .mp3/.ogg/.wav assets are allowed under audio/: {name}")
+        if parts[0] == "res" and pure.suffix.lower() not in res_allowed:
+            raise SystemExit(f"Only .glb/.gltf/.bin/.ktx2/.png/.jpg/.jpeg/.webp/.json/.bundle/.hash/.pck assets are allowed under res/: {name}")
+        if pure.suffix.lower() == ".pck":
+            pck_count += 1
+        if any(part in {".godot", ".git", ".svn", ".hg", "__MACOSX"} for part in parts):
+            raise SystemExit(f"Forbidden asset directory: {name}")
+        if pure.name.startswith("."):
+            raise SystemExit(f"Hidden files are forbidden: {name}")
+        if info.file_size > 32 * 1024 * 1024:
+            raise SystemExit(f"Asset file exceeds 32MB: {name}")
+        count += 1
+        total += info.file_size
+        if count > 500:
+            raise SystemExit("Too many asset files: max 500")
+        if total > 320 * 1024 * 1024:
+            raise SystemExit("Assets zip exceeds 320MB uncompressed")
+if count == 0:
+    raise SystemExit("assets.zip is empty")
+print("assets=ok")
+print(f"assets-files={count}")
+print(f"assets-bytes={total}")
+if pck_count:
+    print(f"assets-pck={pck_count}")
+    print("assets-pck-note=服务端会深度校验 pck 必须 data-only：不含 .gd/.gdc/.gdns/.cs 等脚本、原生库、加密内容，场景/资源不得引用脚本；含脚本的 pck 会在上传时整包被拒。")
+PY
+}
+
+assets_upload() {
+  need_token
+  local zip="$1"
+  [ -n "$zip" ] || { echo "Usage: builda assets upload <zip>" >&2; exit 1; }
+  assets_check_zip "$zip" >/dev/null
+  local game_id
+  game_id="$(project_game_id)"
+  if [ -n "$game_id" ]; then
+    resp="$(authenticated_http_request "assets upload" -X POST "$BUILDA_BASE/api/v1/uploads/assets" -F "file=@$zip" -F "gameId=$game_id")"
+  else
+    resp="$(authenticated_http_request "assets upload" -X POST "$BUILDA_BASE/api/v1/uploads/assets" -F "file=@$zip")"
+  fi
+  printf '%s\n' "$resp" > "$ROOT/last-assets.json"
+  echo "$resp"
+  if command -v jq >/dev/null 2>&1; then
+    if [ ! -f "$MANIFEST" ]; then "$0" new-manifest >/dev/null; fi
+    tmp="$(mktemp)"
+    jq \
+      --arg v "$(printf '%s' "$resp" | jq -r '.assetsVersion // empty')" \
+      --arg base "$(printf '%s' "$resp" | jq -r '.assetsBaseUrl // empty')" \
+      --arg manifest "$(printf '%s' "$resp" | jq -r '.assetsManifestUrl // empty')" \
+      '.assetsVersion=$v | .assetsBaseUrl=$base | .assetsManifestUrl=$manifest' "$MANIFEST" > "$tmp"
+    mv "$tmp" "$MANIFEST"
+    echo "Updated $MANIFEST with audio assets fields."
+  elif command -v python3 >/dev/null 2>&1; then
+    if [ ! -f "$MANIFEST" ]; then "$0" new-manifest >/dev/null; fi
+    python3 - "$MANIFEST" "$resp" <<'PY'
+import json
+import sys
+manifest_path, resp_raw = sys.argv[1:3]
+with open(manifest_path, "r", encoding="utf-8") as f:
+    m = json.load(f)
+r = json.loads(resp_raw)
+m["assetsVersion"] = r.get("assetsVersion", "")
+m["assetsBaseUrl"] = r.get("assetsBaseUrl", "")
+m["assetsManifestUrl"] = r.get("assetsManifestUrl", "")
+with open(manifest_path, "w", encoding="utf-8") as f:
+    json.dump(m, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+PY
+    echo "Updated $MANIFEST with audio assets fields."
+  else
+    echo "Assets uploaded. Copy assetsVersion/assetsBaseUrl/assetsManifestUrl into $MANIFEST."
+  fi
+}
+
+update_manifest_build_fields() {
+  local file="$1" resp="$2" tmp
+  [ -f "$file" ] || { echo "manifest not found: $file" >&2; return 1; }
+  tmp="$(mktemp)"
+  if command -v jq >/dev/null 2>&1; then
+    if ! printf '%s' "$resp" | jq -e . >/dev/null 2>&1; then rm -f "$tmp"; echo "Build upload response is invalid JSON." >&2; return 1; fi
+    if ! jq \
+      --arg p "$(printf '%s' "$resp" | jq -r '.prefix // empty')" \
+      --arg e "$(printf '%s' "$resp" | jq -r '.entry // "index.html"')" \
+      --argjson s "$(printf '%s' "$resp" | jq -r '.size // 0')" \
+      --arg bu "$(printf '%s' "$resp" | jq -r '.bundleUrl // empty')" \
+      --arg bm "$(printf '%s' "$resp" | jq -r '.bundleMd5 // empty')" \
+      --arg bv "$(printf '%s' "$resp" | jq -r '.bundleVersion // .prefix // empty')" \
+      --arg be "$(printf '%s' "$resp" | jq -r '.bundleEntry // .entry // "index.html"')" \
+      --argjson bs "$(printf '%s' "$resp" | jq -r '.bundleSize // 0')" \
+      '.buildPrefix=$p | .buildEntry=$e | .buildSize=$s | .bundleUrl=$bu | .bundleMd5=$bm | .bundleVersion=$bv | .bundleEntry=$be | .bundleSize=$bs' \
+      "$file" > "$tmp"; then
+      rm -f "$tmp"
+      return 1
+    fi
+  elif command -v python3 >/dev/null 2>&1; then
+    if ! python3 - "$file" "$resp" > "$tmp" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    manifest = json.load(f)
+result = json.loads(sys.argv[2])
+prefix = result.get("prefix") or ""
+entry = result.get("entry") or "index.html"
+manifest.update({
+    "buildPrefix": prefix,
+    "buildEntry": entry,
+    "buildSize": result.get("size") or 0,
+    "bundleUrl": result.get("bundleUrl") or "",
+    "bundleMd5": result.get("bundleMd5") or "",
+    "bundleVersion": result.get("bundleVersion") or prefix,
+    "bundleEntry": result.get("bundleEntry") or entry,
+    "bundleSize": result.get("bundleSize") or 0,
+})
+json.dump(manifest, sys.stdout, ensure_ascii=False, indent=2)
+sys.stdout.write("\n")
+PY
+    then
+      rm -f "$tmp"
+      return 1
+    fi
+  else
+    rm -f "$tmp"
+    echo "BUILDA_MANIFEST_UPDATE_UNAVAILABLE: install python3 or jq before upload-build." >&2
+    return 1
+  fi
+  mv "$tmp" "$file"
+}
+
+sdk_prepare_verified_archive() {
+  local channel_path="$1" artifact_name="$2" meta version url expected_url expected_sha expected_size actual_sha actual_size
+  need_python3
+  mkdir -p "$PROJECT_STATE_DIR"
+  SDK_TRANSACTION_ROOT="$(mktemp -d "$PROJECT_STATE_DIR/.sdk-install.XXXXXX")"
+  SDK_ARCHIVE="$SDK_TRANSACTION_ROOT/$artifact_name"
+  if ! meta="$(curl -fsS "$BUILDA_AGENT_BASE/agent/sdk/$channel_path")"; then
+    rm -rf "$SDK_TRANSACTION_ROOT"
+    echo "SDK metadata download failed." >&2
+    return 1
+  fi
+  version="$(printf '%s' "$meta" | json_field version)"
+  url="$(printf '%s' "$meta" | json_field url)"
+  expected_sha="$(printf '%s' "$meta" | json_field sha256 | tr 'A-F' 'a-f')"
+  expected_size="$(printf '%s' "$meta" | json_number size)"
+  expected_url="$BUILDA_AGENT_BASE/agent/releases/$VERSION/$artifact_name"
+  if [ "$version" != "$VERSION" ] || [ "$url" != "$expected_url" ] \
+    || ! printf '%s' "$expected_sha" | grep -E '^[0-9a-f]{64}$' >/dev/null \
+    || [ "${expected_size:-0}" -le 0 ]; then
+    rm -rf "$SDK_TRANSACTION_ROOT"
+    echo "SDK metadata invalid or does not match CLI version $VERSION." >&2
+    return 1
+  fi
+  if ! curl -fsSL "$url" -o "$SDK_ARCHIVE"; then
+    rm -rf "$SDK_TRANSACTION_ROOT"
+    echo "SDK archive download failed." >&2
+    return 1
+  fi
+  actual_size="$(wc -c < "$SDK_ARCHIVE" | tr -d '[:space:]')"
+  actual_sha="$(python3 - "$SDK_ARCHIVE" <<'PY'
+import hashlib
+import sys
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as f:
+    for block in iter(lambda: f.read(1024 * 1024), b""):
+        h.update(block)
+print(h.hexdigest())
+PY
+)"
+  if [ "$actual_size" != "$expected_size" ] || [ "$actual_sha" != "$expected_sha" ]; then
+    rm -rf "$SDK_TRANSACTION_ROOT"
+    echo "SDK archive size or SHA-256 mismatch." >&2
+    return 1
+  fi
+}
+
+sdk_install_directory_set() {
+  local transaction_root="$1"
+  shift
+  local backup_root="$transaction_root/backup" index=0 source destination backup failure=""
+  local -a destinations=() backups=() had_old=() installed=()
+  mkdir -p "$backup_root"
+  while [ "$#" -gt 0 ]; do
+    source="$1"
+    destination="$2"
+    shift 2
+    [ -d "$source" ] || { failure="SDK staged directory missing: $source"; break; }
+    mkdir -p "$(dirname "$destination")"
+    backup="$backup_root/$index"
+    destinations+=("$destination")
+    backups+=("$backup")
+    installed+=(0)
+    if [ -e "$destination" ]; then
+      had_old+=(1)
+      if ! mv "$destination" "$backup"; then failure="failed to back up SDK directory: $destination"; break; fi
+    else
+      had_old+=(0)
+    fi
+    if ! mv "$source" "$destination"; then failure="failed to install SDK directory: $destination"; break; fi
+    installed[$index]=1
+    index=$((index + 1))
+  done
+  if [ -z "$failure" ]; then
+    return 0
+  fi
+
+  local rollback_failed=0 i
+  for ((i=${#destinations[@]}-1; i>=0; i--)); do
+    if [ "${installed[$i]}" = 1 ] && [ -e "${destinations[$i]}" ]; then
+      rm -rf "${destinations[$i]}" || rollback_failed=1
+    fi
+    if [ "${had_old[$i]}" = 1 ] && [ -e "${backups[$i]}" ]; then
+      mv "${backups[$i]}" "${destinations[$i]}" || rollback_failed=1
+    fi
+  done
+  if [ "$rollback_failed" = 1 ]; then
+    echo "BUILDA_SDK_ROLLBACK_FAILED: backup=$backup_root original=$failure" >&2
+  else
+    rm -rf "$transaction_root"
+    echo "$failure" >&2
+  fi
+  return 1
+}
+
+sdk_install() {
+  # 引擎分流：godot 装 addon（现有全流程）；h5 装 web 内核到 .builda-agent/sdk/web/；
+  # unity 装 C# 包装层 + WebGL 模板 + web 内核
+  local engine
+  engine="$(detect_engine_value .)"
+  if [ "$engine" = "h5" ]; then
+    sdk_install_web
+    return
+  fi
+  if [ "$engine" = "unity" ]; then
+    sdk_install_unity
+    return
+  fi
+  [ -f project.godot ] || { echo "project.godot missing. Run inside a Godot project root, run: builda sdk init, or use an HTML5 (index.html/package.json at root) or Unity (ProjectSettings/ProjectVersion.txt) project." >&2; exit 1; }
+  command -v unzip >/dev/null 2>&1 || { echo "Need unzip to install SDK addon." >&2; exit 1; }
+  sdk_prepare_verified_archive "latest.json" "builda-sdk.zip" || exit 1
+  local stage_root="$SDK_TRANSACTION_ROOT/stage" stage_addon
+  mkdir -p "$stage_root"
+  if ! unzip -q -o "$SDK_ARCHIVE" -d "$stage_root"; then rm -rf "$SDK_TRANSACTION_ROOT"; echo "Godot SDK zip invalid." >&2; exit 1; fi
+  stage_addon="$stage_root/addons/builda"
+  [ -f "$stage_addon/builda.gd" ] && [ -f "$stage_addon/plugin.cfg" ] || { rm -rf "$SDK_TRANSACTION_ROOT"; echo "Godot SDK zip layout invalid." >&2; exit 1; }
+  # addons/builda/mic 归项目所有（BuildaMic 内置件是 L2 模板，CP 可魔改分析 worker）：
+  # 升级不覆盖已存在的 mic/；恢复默认 = 删除该目录后重跑 sdk install
+  if [ -d addons/builda/mic ]; then
+    rm -rf "$stage_addon/mic"
+    cp -R addons/builda/mic "$stage_addon/mic"
+    echo "sdk-mic=preserved (addons/builda/mic is project-owned; delete it and rerun sdk install to reset to defaults)"
+  fi
+  sdk_install_directory_set "$SDK_TRANSACTION_ROOT" "$stage_addon" "addons/builda" || exit 1
+  rm -rf "$SDK_TRANSACTION_ROOT"
+  mkdir -p "$PROJECT_STATE_DIR"
+  printf '%s\n' "$VERSION" > "$SDK_VERSION_FILE"
+  echo "sdk-version=$VERSION"
+  echo "sdk-installed=addons/builda"
+  sdk_install_builda_client
+  sdk_ensure_web_head_include
+  if ! sdk_check; then
+    echo "sdk-install=ok"
+    echo "sdk-next=fix sdk check errors, then rerun: builda sdk check" >&2
+    return 0
+  fi
+}
+
+sdk_install_web() {
+  # HTML5 项目：mock SDK/d.ts/dev-shell/mic worker 装到 $PROJECT_STATE_DIR/sdk/web/
+  # （可再生文件，工具链 .gitignore 挡住不入库；sdk-version 收据照旧入库）。
+  command -v unzip >/dev/null 2>&1 || { echo "Need unzip to install the web SDK." >&2; exit 1; }
+  sdk_prepare_verified_archive "web/latest.json" "builda-sdk-web.zip" || exit 1
+  local stage="$SDK_TRANSACTION_ROOT/stage/web" dst
+  mkdir -p "$stage"
+  if ! unzip -q -o "$SDK_ARCHIVE" -d "$stage"; then rm -rf "$SDK_TRANSACTION_ROOT"; echo "Web SDK zip invalid." >&2; exit 1; fi
+  [ -f "$stage/builda-sdk.js" ] && [ -f "$stage/builda-sdk.d.ts" ] || { rm -rf "$SDK_TRANSACTION_ROOT"; echo "Web SDK zip layout invalid." >&2; exit 1; }
+  dst="$PROJECT_STATE_DIR/sdk/web"
+  sdk_install_directory_set "$SDK_TRANSACTION_ROOT" "$stage" "$dst" || exit 1
+  rm -rf "$SDK_TRANSACTION_ROOT"
+  mkdir -p "$PROJECT_STATE_DIR"
+  printf '%s\n' "$VERSION" > "$SDK_VERSION_FILE"
+  echo "sdk-version=$VERSION"
+  echo "sdk-installed=$dst"
+  echo "sdk-engine=h5"
+  echo "sdk-next-1=在游戏 HTML 的 <head> 里引用根路径 SDK：<script src=\"builda-sdk.js\"></script>（构建产物 index.html 必须带上该引用；zip 不内嵌 SDK，正式运行时由宿主按 manifest sdk 契约注入）"
+  echo "sdk-next-2=本地调试：builda dev --web <构建目录或 zip>（dev server 自动从 $dst 兜底 serve mock SDK 与测试外壳）"
+  echo "sdk-next-3=TypeScript 类型提示：把 $dst/builda-sdk.d.ts 加进 tsconfig include（可选）"
+  if ! sdk_check; then
+    echo "sdk-install=ok"
+    echo "sdk-next=fix sdk check errors, then rerun: builda sdk check" >&2
+    return 0
+  fi
+}
+
+sdk_install_unity() {
+  # Unity 项目：C# 包装层/jslib 装 Assets/Builda/，Builda WebGL 模板装 Assets/WebGLTemplates/
+  # （Unity 硬性要求的模板位置），web 内核 mock 落 $PROJECT_STATE_DIR/sdk/web/（与 h5 同构）。
+  # 三个落点都归 SDK 所有，升级整体覆盖（无 Godot mic 那样的项目所有保留逻辑）。
+  command -v unzip >/dev/null 2>&1 || { echo "Need unzip to install the Unity SDK." >&2; exit 1; }
+  sdk_prepare_verified_archive "unity/latest.json" "builda-sdk-unity.zip" || exit 1
+  local tmpdir="$SDK_TRANSACTION_ROOT/stage"
+  mkdir -p "$tmpdir"
+  if ! unzip -q -o "$SDK_ARCHIVE" -d "$tmpdir"; then rm -rf "$SDK_TRANSACTION_ROOT"; echo "Unity SDK zip invalid." >&2; exit 1; fi
+  [ -d "$tmpdir/Assets/Builda" ] && [ -d "$tmpdir/Assets/WebGLTemplates/Builda" ] && [ -d "$tmpdir/.builda-agent/sdk/web" ] \
+    || { echo "Unity SDK zip layout invalid." >&2; rm -rf "$SDK_TRANSACTION_ROOT"; exit 1; }
+  local -a install_pairs=(
+    "$tmpdir/Assets/Builda" "Assets/Builda"
+    "$tmpdir/Assets/WebGLTemplates/Builda" "Assets/WebGLTemplates/Builda"
+    "$tmpdir/.builda-agent/sdk/web" "$PROJECT_STATE_DIR/sdk/web"
+  )
+  # BuildaMic 分析 Worker 归项目所有（L2 模板，CP 可魔改算法）：升级不覆盖已存在目录；
+  # 恢复默认 = 删除 Assets/StreamingAssets/builda-mic 后重跑 sdk install
+  if [ -d "$tmpdir/Assets/StreamingAssets/builda-mic" ]; then
+    if [ -d Assets/StreamingAssets/builda-mic ]; then
+      echo "sdk-mic=preserved (Assets/StreamingAssets/builda-mic is project-owned; delete it and rerun sdk install to reset to defaults)"
+    else
+      install_pairs+=("$tmpdir/Assets/StreamingAssets/builda-mic" "Assets/StreamingAssets/builda-mic")
+      echo "sdk-mic=Assets/StreamingAssets/builda-mic"
+    fi
+  fi
+  sdk_install_directory_set "$SDK_TRANSACTION_ROOT" "${install_pairs[@]}" || exit 1
+  rm -rf "$SDK_TRANSACTION_ROOT"
+  printf '%s\n' "$VERSION" > "$SDK_VERSION_FILE"
+  echo "sdk-version=$VERSION"
+  echo "sdk-installed=Assets/Builda"
+  echo "sdk-engine=unity"
+  echo "sdk-next-1=Player Settings > Resolution and Presentation > WebGL Template 选 Builda（模板已装到 Assets/WebGLTemplates/Builda/，head 内已引用 builda-sdk.js）"
+  echo "sdk-next-2=Player Settings > Publishing Settings：Compression Format 选 Brotli 并勾选 Decompression Fallback（推荐），或选 Disabled；开压缩但不勾 Fallback 的产物会被上传校验拒绝"
+  echo "sdk-next-3=本地调试：builda dev --web <WebGL 构建目录或 zip>（dev server 自动从 $PROJECT_STATE_DIR/sdk/web 兜底 serve mock SDK 与测试外壳）"
+  if ! sdk_check; then
+    echo "sdk-install=ok"
+    echo "sdk-next=fix sdk check errors, then rerun: builda sdk check" >&2
+    return 0
+  fi
+}
+
+sdk_install_builda_client() {
+  [ -f addons/builda/examples/BuildaClient.gd ] || return 0
+  mkdir -p scripts
+  if [ ! -f scripts/BuildaClient.gd ]; then
+    cp addons/builda/examples/BuildaClient.gd scripts/BuildaClient.gd
+    echo "sdk-client=scripts/BuildaClient.gd"
+  else
+    echo "sdk-client=scripts/BuildaClient.gd exists"
+  fi
+  sdk_ensure_autoload
+}
+
+sdk_ensure_autoload() {
+  [ -f project.godot ] || return 0
+  local tmp
+  tmp="$(mktemp)"
+  awk '
+    BEGIN { in_autoload=0; wrote=0; saw_autoload=0 }
+    /^\[autoload\]$/ {
+      in_autoload=1
+      saw_autoload=1
+      print
+      next
+    }
+    /^\[/ {
+      if (in_autoload && !wrote) {
+        print "BuildaClient=\"*res://scripts/BuildaClient.gd\""
+        wrote=1
+      }
+      in_autoload=0
+    }
+    in_autoload && /^BuildaClient=/ {
+      if (!wrote) {
+        print "BuildaClient=\"*res://scripts/BuildaClient.gd\""
+        wrote=1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!wrote) {
+        if (!saw_autoload) {
+          print ""
+          print "[autoload]"
+        }
+        print "BuildaClient=\"*res://scripts/BuildaClient.gd\""
+      }
+    }
+  ' project.godot > "$tmp"
+  mv "$tmp" project.godot
+  echo "sdk-autoload=BuildaClient"
+}
+
+sdk_ensure_web_head_include() {
+  [ -f export_presets.cfg ] || { echo "sdk-web-head=export_presets.cfg missing"; return 0; }
+  command -v python3 >/dev/null 2>&1 || { echo "sdk-web-head=python3 missing"; return 0; }
+  python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path("export_presets.cfg")
+text = path.read_text(encoding="utf-8", errors="ignore")
+script = '<script src="builda-sdk.js"></script>'
+lines = text.splitlines()
+
+web_ids = set()
+current = None
+for line in lines:
+    match = re.match(r"\[preset\.(\d+)\]$", line)
+    if match:
+        current = match.group(1)
+        continue
+    if line.startswith("["):
+        current = None
+        continue
+    if current is not None and line == 'platform="Web"':
+        web_ids.add(current)
+
+if not web_ids:
+    print("sdk-web-head=no web preset")
+    raise SystemExit(0)
+
+out = []
+current_section = None
+in_web_options = False
+seen_head = False
+changed = False
+already_ok = False
+
+def inject_head(line: str) -> str:
+    prefix = "html/head_include="
+    value = line[len(prefix):]
+    if "builda-sdk.js" in value:
+        migrated = value.replace('addons/builda/web/builda-sdk.js', 'builda-sdk.js')
+        if migrated != value:
+            return prefix + migrated
+        return line
+    if value == '""':
+        return prefix + '"<script src=\\"builda-sdk.js\\"></script>"'
+    if value.startswith('"') and value.endswith('"'):
+        return prefix + value[:-1] + '\\n<script src=\\"builda-sdk.js\\"></script>"'
+    return line
+
+for line in lines:
+    section = re.match(r"\[preset\.(\d+)(\.options)?\]$", line)
+    if section:
+        if in_web_options and not seen_head:
+            out.append('html/head_include="<script src=\\"builda-sdk.js\\"></script>"')
+            changed = True
+        current_section = section.group(1)
+        in_web_options = section.group(1) in web_ids and bool(section.group(2))
+        seen_head = False
+        out.append(line)
+        continue
+    if line.startswith("["):
+        if in_web_options and not seen_head:
+            out.append('html/head_include="<script src=\\"builda-sdk.js\\"></script>"')
+            changed = True
+        current_section = None
+        in_web_options = False
+        seen_head = False
+        out.append(line)
+        continue
+    if current_section in web_ids and not in_web_options and line.startswith("html/head_include="):
+        seen_head = True
+        new_line = inject_head(line)
+        already_ok = already_ok or "builda-sdk.js" in new_line
+        changed = changed or new_line != line
+        out.append(new_line)
+        continue
+    if in_web_options and line.startswith("html/head_include="):
+        seen_head = True
+        new_line = inject_head(line)
+        already_ok = already_ok or "builda-sdk.js" in new_line
+        changed = changed or new_line != line
+        out.append(new_line)
+        continue
+    out.append(line)
+
+if in_web_options and not seen_head:
+    out.append('html/head_include="<script src=\\"builda-sdk.js\\"></script>"')
+    changed = True
+
+if changed:
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    print("sdk-web-head=builda-sdk.js injected")
+elif already_ok:
+    print("sdk-web-head=builda-sdk.js exists")
+else:
+    print("sdk-web-head=builda-sdk.js missing")
+    raise SystemExit(1)
+PY
+}
+
+sdk_init() {
+  if [ -f project.godot ]; then
+    echo "project.godot already exists"
+    return 0
+  fi
+  mkdir -p scenes scripts
+  cat > project.godot <<'EOF'
+; Engine configuration file.
+; Minimal project skeleton generated by Builda SDK tooling for agent validation.
+
+config_version=5
+
+[application]
+config/name="Builda SDK Minimal"
+run/main_scene="res://scenes/main.tscn"
+EOF
+  cat > scenes/main.tscn <<'EOF'
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+
+[node name="Main" type="Node"]
+script = ExtResource("1_main")
+EOF
+  cat > scripts/main.gd <<'EOF'
+extends Node
+
+func _ready() -> void:
+	if Engine.has_singleton("JavaScriptBridge"):
+		print("Builda SDK minimal project loaded")
+	else:
+		print("Builda SDK minimal project loaded outside Web runtime")
+EOF
+  echo "sdk-init=ok"
+  echo "sdk-init-project=project.godot"
+  echo "sdk-init-next=builda sdk install && builda sdk smoke"
+}
+
+sdk_check() {
+  local engine
+  engine="$(detect_engine_value .)"
+  if [ "$engine" = "h5" ]; then
+    sdk_check_web
+    return
+  fi
+  if [ "$engine" = "unity" ]; then
+    sdk_check_unity
+    return
+  fi
+  [ -f addons/builda/builda.gd ] || { echo "Missing addons/builda/builda.gd. Run: builda sdk install" >&2; return 1; }
+  [ -f addons/builda/web/builda-sdk.js ] || { echo "Missing addons/builda/web/builda-sdk.js. Run: builda sdk install" >&2; return 1; }
+  [ -f addons/builda/web/builda-sdk.d.ts ] || { echo "Missing addons/builda/web/builda-sdk.d.ts. Run: builda sdk install" >&2; return 1; }
+  local sdk_version plugin_version
+  if [ -f "$SDK_VERSION_FILE" ]; then
+    sdk_version="$(head -n 1 "$SDK_VERSION_FILE" | tr -d '\r')"
+    echo "sdk-version=$sdk_version"
+  else
+    echo "sdk-version=unknown"
+    echo "sdk-upgrade-hint=run builda sdk install to record the installed SDK version"
+  fi
+  plugin_version="$(sed -n 's/^version="\([^"]*\)".*/\1/p' addons/builda/plugin.cfg 2>/dev/null | head -n 1)"
+  if [ -n "$plugin_version" ]; then
+    echo "sdk-addon-version=$plugin_version"
+    if [ -n "${sdk_version:-}" ] && [ "$plugin_version" != "$sdk_version" ]; then
+      echo "SDK version mismatch: $SDK_VERSION_FILE=$sdk_version but addons/builda/plugin.cfg=$plugin_version. Run: builda sdk install" >&2
+      return 1
+    fi
+  else
+    echo "sdk-addon-version=unknown"
+  fi
+  if [ -f project.godot ] && grep -Eq '^BuildaClient="\*res://scripts/BuildaClient\.gd"' project.godot && [ ! -f scripts/BuildaClient.gd ]; then
+    echo "Autoload BuildaClient points to missing scripts/BuildaClient.gd. Run: builda sdk install" >&2
+    return 1
+  fi
+  if [ -f scripts/BuildaClient.gd ]; then
+    echo "sdk-client=scripts/BuildaClient.gd user-owned"
+  else
+    echo "sdk-client=missing"
+  fi
+  if ! sdk_compat_check; then
+    return 1
+  fi
+  echo "sdk=ok"
+  echo "sdk-addon=addons/builda"
+}
+
+sdk_check_web() {
+  local dst="$PROJECT_STATE_DIR/sdk/web" sdk_version
+  [ -f "$dst/builda-sdk.js" ] || { echo "Missing $dst/builda-sdk.js. Run: builda sdk install" >&2; return 1; }
+  [ -f "$dst/builda-sdk.d.ts" ] || { echo "Missing $dst/builda-sdk.d.ts. Run: builda sdk install" >&2; return 1; }
+  if [ -f "$SDK_VERSION_FILE" ]; then
+    sdk_version="$(head -n 1 "$SDK_VERSION_FILE" | tr -d '\r')"
+    echo "sdk-version=$sdk_version"
+  else
+    echo "sdk-version=unknown"
+    echo "sdk-upgrade-hint=run builda sdk install to record the installed SDK version"
+  fi
+  if ! sdk_compat_check; then
+    return 1
+  fi
+  echo "sdk=ok"
+  echo "sdk-engine=h5"
+  echo "sdk-web=$dst"
+}
+
+sdk_check_unity() {
+  local dst="$PROJECT_STATE_DIR/sdk/web" sdk_version=""
+  [ -f Assets/Builda/Runtime/Builda.cs ] || { echo "Missing Assets/Builda/Runtime/Builda.cs. Run: builda sdk install" >&2; return 1; }
+  [ -f Assets/Builda/Plugins/WebGL/Builda.jslib ] || { echo "Missing Assets/Builda/Plugins/WebGL/Builda.jslib. Run: builda sdk install" >&2; return 1; }
+  [ -f Assets/Builda/Runtime/BuildaMic.cs ] || { echo "Missing Assets/Builda/Runtime/BuildaMic.cs. Run: builda sdk install" >&2; return 1; }
+  [ -f Assets/Builda/Plugins/WebGL/BuildaMic.jslib ] || { echo "Missing Assets/Builda/Plugins/WebGL/BuildaMic.jslib. Run: builda sdk install" >&2; return 1; }
+  [ -f Assets/WebGLTemplates/Builda/index.html ] || { echo "Missing Assets/WebGLTemplates/Builda/index.html. Run: builda sdk install" >&2; return 1; }
+  grep -q "builda-sdk.js" Assets/WebGLTemplates/Builda/index.html || { echo "Builda WebGL template lost its builda-sdk.js reference. Run: builda sdk install" >&2; return 1; }
+  [ -f "$dst/builda-sdk.js" ] || { echo "Missing $dst/builda-sdk.js (mock SDK for builda dev). Run: builda sdk install" >&2; return 1; }
+  if [ -f "$SDK_VERSION_FILE" ]; then
+    sdk_version="$(head -n 1 "$SDK_VERSION_FILE" | tr -d '\r')"
+    echo "sdk-version=$sdk_version"
+    local cs_version
+    cs_version="$(sed -n 's/.*SdkVersion = "\([^"]*\)".*/\1/p' Assets/Builda/Runtime/Builda.cs | head -n 1)"
+    if [ -n "$cs_version" ] && [ "$cs_version" != "$sdk_version" ]; then
+      echo "SDK version mismatch: $SDK_VERSION_FILE=$sdk_version but Assets/Builda/Runtime/Builda.cs=$cs_version. Run: builda sdk install" >&2
+      return 1
+    fi
+  else
+    echo "sdk-version=unknown"
+    echo "sdk-upgrade-hint=run builda sdk install to record the installed SDK version"
+  fi
+  if ! sdk_compat_check; then
+    return 1
+  fi
+  # 分析 Worker 项目所有，缺失只提示不判失败（BuildaMic 可选能力）
+  if [ -f Assets/StreamingAssets/builda-mic/builda-mic-worker.js ]; then
+    echo "sdk-mic=Assets/StreamingAssets/builda-mic user-owned"
+  else
+    echo "sdk-mic=missing (rerun builda sdk install to restore the BuildaMic analysis worker)"
+  fi
+  echo "sdk=ok"
+  echo "sdk-engine=unity"
+  echo "sdk-unity=Assets/Builda"
+}
+
+# sdk_mock_path 当前项目 mock SDK 的落点（引擎分流；dev serve 兜底与 smoke 都用它；
+# h5/unity 都落 $PROJECT_STATE_DIR/sdk/web/，无 addons 时自动命中）
+sdk_mock_path() {
+  if [ -f "$PROJECT_STATE_DIR/sdk/web/builda-sdk.js" ] && [ ! -f addons/builda/web/builda-sdk.js ]; then
+    printf '%s' "$PROJECT_STATE_DIR/sdk/web/builda-sdk.js"
+  else
+    printf '%s' "addons/builda/web/builda-sdk.js"
+  fi
+}
+
+sdk_smoke_next_hint() {
+  case "$1" in
+    godot) echo "sdk-next=export Godot Web build, then run builda dev --web <export directory or zip>" ;;
+    h5) echo "sdk-next=run builda dev --web <H5 build directory or zip>" ;;
+    unity) echo "sdk-next=build Unity WebGL, then run builda dev --web <WebGL build directory or zip>" ;;
+    *) echo "sdk-next=run builda dev --web <web build directory or zip>" ;;
+  esac
+  echo "sdk-next-url=?gameId=local-game&builda_mock_player=alice&builda_mock_name=Alice"
+}
+
+sdk_smoke() {
+  sdk_check >/dev/null
+  local mock_js engine
+  mock_js="$(sdk_mock_path)"
+  engine="$(detect_engine_value ".")"
+  command -v node >/dev/null 2>&1 || {
+    echo "sdk-smoke=manual"
+    sdk_smoke_next_hint "$engine"
+    echo "Then call Builda.whoami() and Builda.privateKV.set/get/remove."
+    return 0
+  }
+  BUILDA_SMOKE_SDK="$mock_js" node <<'JS'
+const fs = require("fs");
+const vm = require("vm");
+const store = new Map();
+global.window = {
+  location: { search: "?gameId=local-game&builda_mock_player=alice&builda_mock_name=Alice" },
+  localStorage: {
+    getItem: (key) => store.has(key) ? store.get(key) : null,
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key),
+    key: (i) => Array.from(store.keys())[i] ?? null,
+    get length() { return store.size; }
+  }
+};
+global.URLSearchParams = URLSearchParams;
+global.fetch = async () => { throw new Error("local mock smoke must not call fetch"); };
+vm.runInThisContext(fs.readFileSync(process.env.BUILDA_SMOKE_SDK || "addons/builda/web/builda-sdk.js", "utf8"));
+(async () => {
+  const who = await window.Builda.whoami();
+  if (!who.ok || who.data.id !== "alice") throw new Error("whoami mock failed");
+  const save = new TextEncoder().encode(JSON.stringify({ count: 3 }));
+  const set = await window.Builda.privateKV.set("wins", save);
+  if (!set.ok) throw new Error("privateKV.set mock failed");
+  const got = await window.Builda.privateKV.get("wins");
+  if (!got.ok || !(got.data instanceof Uint8Array) || JSON.parse(new TextDecoder().decode(got.data)).count !== 3) throw new Error("privateKV.get mock failed");
+  const setMany = await window.Builda.privateKV.setMany({ a: new Uint8Array([1]), b: new Uint8Array([2, 2]) });
+  if (!setMany.ok) throw new Error("privateKV.setMany mock failed");
+  const gotMany = await window.Builda.privateKV.getMany(["a", "b", "absent"]);
+  if (!gotMany.ok || gotMany.data.entries.a.length !== 1 || gotMany.data.entries.b.length !== 2 || gotMany.data.entries.absent !== null) throw new Error("privateKV.getMany mock failed");
+  const tooBig = await window.Builda.privateKV.set("big", new Uint8Array(32 * 1024 + 1));
+  if (tooBig.ok || tooBig.error.code !== "VALUE_TOO_LARGE") throw new Error("privateKV value size limit not enforced");
+  const removedMany = await window.Builda.privateKV.removeMany(["a", "b"]);
+  if (!removedMany.ok) throw new Error("privateKV.removeMany mock failed");
+  const removed = await window.Builda.privateKV.remove("wins");
+  if (!removed.ok) throw new Error("privateKV.remove mock failed");
+  const missing = await window.Builda.privateKV.get("wins");
+  if (!missing.ok || missing.data !== null) throw new Error("privateKV.remove verification failed");
+  console.log("sdk-smoke=ok");
+  console.log("sdk-mode=local-mock");
+  console.log("sdk-smoke-verified=whoami,privateKV.set,privateKV.get,privateKV.setMany,privateKV.getMany,privateKV.removeMany,privateKV.remove");
+})().catch((err) => {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+JS
+  sdk_smoke_next_hint "$engine"
+}
+
+need_python3() {
+  command -v python3 >/dev/null 2>&1 || { echo "backend commands require python3 for JSON and ELF validation." >&2; exit 1; }
+}
+
+open_authorize_url() {
+  local url="$1"
+  if [ -n "${BROWSER:-}" ]; then
+    "$BROWSER" "$url" >/dev/null 2>&1 &
+  elif command -v open >/dev/null 2>&1; then
+    open "$url" >/dev/null 2>&1 &
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$url" >/dev/null 2>&1 &
+  elif command -v wslview >/dev/null 2>&1; then
+    wslview "$url" >/dev/null 2>&1 &
+  else
+    return 1
+  fi
+}
+
+save_grant() {
+  local grant="$1"
+  [ -n "$grant" ] || { echo "empty grant" >&2; exit 1; }
+  mkdir -p "$AUTH_DIR"
+  printf '%s' "$grant" > "$TOKEN_FILE"
+  chmod 600 "$TOKEN_FILE"
+  echo "Agent grant saved for 30 minutes."
+}
+
+save_refresh() {
+  local refresh="$1"
+  [ -n "$refresh" ] || return 0
+  mkdir -p "$AUTH_DIR"
+  printf '%s' "$refresh" > "$REFRESH_FILE"
+  chmod 600 "$REFRESH_FILE"
+  echo "Agent authorization saved for 30 days."
+}
+
+grant_needs_refresh() {
+  [ -f "$REFRESH_FILE" ] || return 1
+  [ -f "$TOKEN_FILE" ] || return 0
+  local now mtime age
+  now="$(date +%s)"
+  if mtime="$(stat -c %Y "$TOKEN_FILE" 2>/dev/null)"; then
+    :
+  elif mtime="$(stat -f %m "$TOKEN_FILE" 2>/dev/null)"; then
+    :
+  else
+    return 1
+  fi
+  age=$((now - mtime))
+  [ "$age" -ge 1500 ]
+}
+
+grant_is_fresh() {
+  [ -f "$TOKEN_FILE" ] || return 1
+  local now mtime age
+  now="$(date +%s)"
+  if mtime="$(stat -c %Y "$TOKEN_FILE" 2>/dev/null)"; then
+    :
+  elif mtime="$(stat -f %m "$TOKEN_FILE" 2>/dev/null)"; then
+    :
+  else
+    return 1
+  fi
+  age=$((now - mtime))
+  [ "$age" -lt 1500 ]
+}
+
+refresh_grant() {
+  [ -f "$REFRESH_FILE" ] || return 1
+  local refresh resp grant
+  refresh="$(cat "$REFRESH_FILE")"
+  [ -n "$refresh" ] || return 1
+  resp="$(curl -sS -X POST "$BUILDA_BASE/api/v1/agent/auth/refresh" -H 'Content-Type: application/json' -d "{\"refresh_token\":\"$refresh\"}")" || return 1
+  grant="$(printf '%s' "$resp" | json_field token)"
+  [ -n "$grant" ] || return 1
+  save_grant "$grant" >/dev/null
+  echo "Agent grant refreshed automatically."
+}
+
+auth_with_pair_code() {
+  local code="$1"
+  resp="$(curl -sS -X POST "$BUILDA_BASE/api/v1/agent/exchange" -H 'Content-Type: application/json' -d "{\"code\":\"$code\"}")"
+  grant="$(printf '%s' "$resp" | json_field token)"
+  if [ -z "$grant" ]; then
+    echo "Pair code exchange failed or expired. Starting browser authorization instead." >&2
+    auth_with_browser
+    return
+  fi
+  save_grant "$grant"
+  save_refresh "$(printf '%s' "$resp" | json_field refresh_token)"
+}
+
+auth_with_browser() {
+  auth_start_body='{}'
+  if [ -n "$BUILDA_SITE_ORIGIN" ]; then
+    auth_start_body="$(printf '{\"site_origin\":\"%s\"}' "$BUILDA_SITE_ORIGIN")"
+  fi
+  resp="$(http_request "auth start" -X POST "$BUILDA_BASE/api/v1/agent/auth/start" -H 'Content-Type: application/json' -d "$auth_start_body")"
+  auth_id="$(printf '%s' "$resp" | json_field auth_id)"
+  authorize_url="$(printf '%s' "$resp" | json_field authorize_url)"
+  activate_url="$(printf '%s' "$resp" | json_field activate_url)"
+  user_code="$(printf '%s' "$resp" | json_field user_code)"
+  interval="$(printf '%s' "$resp" | json_number interval)"
+  expires="$(printf '%s' "$resp" | json_number expires_in)"
+  [ -n "$auth_id" ] && [ -n "$authorize_url" ] || { echo "Auth start failed: $resp" >&2; exit 1; }
+  activate_url="${activate_url:-$BUILDA_BASE/activate}"
+  interval="${interval:-2}"
+  expires="${expires:-600}"
+
+  echo "I need your BuildaGame permission to upload a draft."
+  echo "Opening the browser authorization page..."
+  if ! open_authorize_url "$authorize_url"; then
+    echo "Open this URL in your browser:"
+    echo "$authorize_url"
+  else
+    echo "If the browser did not open, visit:"
+    echo "$authorize_url"
+  fi
+  if [ -n "$user_code" ]; then
+    echo
+    echo "On another device, open:"
+    echo "$activate_url"
+    echo "Enter code: $user_code"
+  fi
+  echo "Log in or sign up there, click Allow agent, then return here."
+
+  elapsed=0
+  while [ "$elapsed" -lt "$expires" ]; do
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+    poll="$(http_request "auth status" "$BUILDA_BASE/api/v1/agent/auth/status?auth_id=$auth_id")"
+    status="$(printf '%s' "$poll" | json_field status)"
+    case "$status" in
+      approved)
+        grant="$(printf '%s' "$poll" | json_field token)"
+        save_grant "$grant"
+        save_refresh "$(printf '%s' "$poll" | json_field refresh_token)"
+        return
+        ;;
+      expired)
+        echo "Authorization expired. Run: builda auth" >&2
+        exit 1
+        ;;
+      pending|"")
+        printf '.'
+        ;;
+      *)
+        echo "Authorization failed: $poll" >&2
+        exit 1
+        ;;
+    esac
+  done
+  echo
+  echo "Authorization timed out. Run: builda auth" >&2
+  exit 1
+}
+
+ensure_authorization() {
+  local code="${1:-}"
+  if [ -f "$TOKEN_FILE" ] && authenticated_http_request "whoami" "$BUILDA_BASE/api/v1/agent/whoami" >/dev/null 2>&1; then
+    echo "authorization=ready"
+    echo "grant=present"
+    [ -f "$REFRESH_FILE" ] && echo "agent-authorization=present" || echo "agent-authorization=missing"
+    return
+  fi
+  if [ ! -f "$TOKEN_FILE" ] && [ -f "$REFRESH_FILE" ] && refresh_grant; then
+    echo "authorization=ready"
+    echo "grant=present"
+    echo "agent-authorization=present"
+    return
+  fi
+  if [ -n "$code" ]; then
+    auth_with_pair_code "$code"
+  else
+    auth_with_browser
+  fi
+  echo "authorization=ready"
+  echo "grant=present"
+  [ -f "$REFRESH_FILE" ] && echo "agent-authorization=present" || echo "agent-authorization=missing"
+}
+
+studio_auth() {
+  ticket="${BUILDA_STUDIO_AUTH_TICKET:-}"
+  [ -n "$ticket" ] || { echo "studio-auth requires BUILDA_STUDIO_AUTH_TICKET" >&2; exit 1; }
+  umask 077
+  mkdir -p "$AUTH_DIR"
+  chmod 700 "$AUTH_DIR"
+  [ -w "$AUTH_DIR" ] || { echo "studio-auth cannot write the auth directory" >&2; exit 1; }
+  [ ! -f "$REFRESH_FILE" ] || {
+    echo "studio-auth refuses an auth directory containing a refresh-token; use an isolated Studio HOME" >&2
+    exit 1
+  }
+  resp="$(printf '{\"ticket\":\"%s\"}' "$ticket" | http_request "Studio auth exchange" -X POST "$BUILDA_BASE/api/v1/agent/auth/studio-exchange" -H 'Content-Type: application/json' --data-binary @-)"
+  grant="$(printf '%s' "$resp" | json_field token)"
+  [ -n "$grant" ] || { echo "Studio auth exchange did not return a grant." >&2; exit 1; }
+  refresh="$(printf '%s' "$resp" | json_field refresh_token)"
+  [ -n "$refresh" ] || { echo "Studio auth exchange did not return a renewal credential." >&2; exit 1; }
+  save_grant "$grant" >/dev/null
+  save_refresh "$refresh" >/dev/null
+  echo "authorization=ready"
+  echo "grant=present"
+  echo "agent-authorization=present"
+  echo "authorization-source=studio"
+}
+
+original_args=("$@")
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+  ""|-h|--help|help|version|--version|-v) ;; # 这些命令不依赖项目上下文
+  *) require_project_context "${original_args[@]}" ;;
+esac
+legacy_auth_migrate
+[ "$cmd" = "studio-auth" ] || maybe_self_update "${original_args[@]}"
+case "$cmd" in
+  studio-auth)
+    studio_auth
+    ;;
+  auth)
+    auth_arg="${1:-}"
+    if [ "$auth_arg" = "--force" ]; then
+      auth_with_browser
+      echo "authorization=ready"
+      echo "grant=present"
+      echo "agent-authorization=present"
+    else
+      code="${auth_arg:-${BUILDA_PAIR_CODE:-}}"
+      ensure_authorization "$code"
+    fi
+    ;;
+  whoami)
+    write_acting_identity
+    ;;
+  check)
+    check_update
+    sync_project_registrations >/dev/null
+    echo "project-registrations=ensured"
+    echo "BUILDA_BASE=$BUILDA_BASE"
+    echo "BUILDA_AGENT_BASE=$BUILDA_AGENT_BASE"
+    [ -f "$TOKEN_FILE" ] && echo "grant=present" || echo "grant=missing"
+    [ -f "$REFRESH_FILE" ] && echo "agent-authorization=present" || echo "agent-authorization=missing"
+    command -v curl >/dev/null 2>&1 && echo "curl=ok" || echo "curl=missing"
+    command -v jq >/dev/null 2>&1 && echo "jq=ok" || echo "jq=missing (optional; receipts still print)"
+    echo "engine=$(detect_engine_value .)"
+    if [ -f "$PROJECT_FILE" ]; then
+      pgid="$(project_game_id)"
+      [ -n "$pgid" ] && echo "project-game-id=$pgid" || echo "project-game-id=invalid"
+      echo "project-state-dir=$(dirname "$PROJECT_FILE")"
+    elif [ -f "$LEGACY_PROJECT_FILE" ]; then
+      pgid="$(project_game_id)"
+      [ -n "$pgid" ] && echo "project-game-id=$pgid" || echo "project-game-id=invalid"
+      echo "project-binding=$PROJECT_FILE"
+      echo "project-state-dir=$(dirname "$PROJECT_FILE")"
+    else
+      echo "project-game-id=missing"
+    fi
+    ;;
+  update)
+    self_update "$(remote_version)"
+    ;;
+  sync-project)
+    echo "Agent registrations:"
+    sync_project_registrations
+    ;;
+  engine)
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      detect)
+        engine_detect "${1:-.}"
+        ;;
+      ""|-h|--help|help)
+        echo "Usage: builda engine detect [dir]"
+        ;;
+      *)
+        echo "Unknown engine command: $sub" >&2
+        echo "Usage: builda engine detect [dir]" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  version|--version|-v)
+    echo "$VERSION"
+    ;;
+  new-manifest)
+    if [ -f "$MANIFEST" ]; then echo "$MANIFEST already exists"; exit 0; fi
+    # engine 按目录判定写入 manifest（后续 bundle-check/upload-build 以 manifest 为准）；
+    # unknown 兜底 godot，与后端"空=godot"口径一致
+    detected_engine="$(detect_engine_value .)"
+    case "$detected_engine" in
+      godot|h5|unity) ;;
+      *) detected_engine="godot" ;;
+    esac
+    cat > "$MANIFEST" <<JSON
+{
+  "title": "Your game",
+  "tagline": "One short sentence about the game.",
+  "desc": "What players should know before playing.",
+  "category": "",
+  "engine": "$detected_engine",
+  "tags": ["$detected_engine"],
+  "orientation": "landscape",
+  "minChromeMajor": 0,
+  "minIOSMajor": 0,
+  "coverKind": "palette",
+  "coverPalette": "ember",
+  "coverUrl": "",
+  "buildPrefix": "",
+  "buildEntry": "index.html",
+  "buildSize": 0,
+  "bundleUrl": "",
+  "bundleMd5": "",
+  "bundleVersion": "",
+  "bundleEntry": "index.html",
+  "bundleSize": 0,
+  "assetsVersion": "",
+  "assetsBaseUrl": "",
+  "assetsManifestUrl": "",
+  "sdkVersion": ""
+}
+JSON
+    echo "For in-app purchases, add payPoints only when needed, for example:"
+    echo '  "payPoints": [{"payId":"coin_pack_1","payName":"Coins Pack","price":100}]'
+    echo "Omit payPoints entirely for games without purchases; do not write an empty array."
+    echo "For leaderboards, omit rankBoards to keep existing boards; use [] only to clear all boards."
+    echo '  "rankBoards": [{"rankId":"high_score","displayName":"High Score","sortType":"desc","cycleType":"forever","minScore":0,"maxScore":9999999999}]'
+    echo "category is required: choose exactly one of the 28 values documented in .builda-agent/SKILL.md; do not invent a value or change its case."
+    echo "minChromeMajor/minIOSMajor gate which devices may play: fill the LOWEST browser majors the build actually runs on (lower = more players; the 0 placeholders are rejected until you assess and fill them)."
+    echo "Judge by what the build really requires: WASM engine exports (e.g. Godot 4 Web, Unity WebGL) inherit their floor from the compiler toolchain (post-MVP WASM features land around Chrome 75-85 / iOS 15) - check the engine or Emscripten minimum-browser docs, and fall back to the platform baseline 80/15 when you cannot verify lower; plain canvas/DOM H5 with down-leveled JS can go much lower. Do not inflate the values, and do not claim majors the build cannot actually run on."
+    echo "Wrote $MANIFEST"
+    ;;
+  dev)
+    builda_dev_parse "$@"
+    ;;
+  godot)
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      web-template-check)
+        godot_web_template_check "${1:-godot}"
+        ;;
+      ""|-h|--help|help)
+        echo "Usage: builda godot web-template-check [godot|godot4]"
+        ;;
+      *)
+        echo "Unknown godot command: $sub" >&2
+        echo "Usage: builda godot web-template-check [godot|godot4]" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  sdk)
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      init)
+        sdk_init
+        ;;
+      install)
+        sdk_install
+        ;;
+      check)
+        sdk_check
+        ;;
+      smoke)
+        sdk_smoke
+        ;;
+      ""|-h|--help|help)
+        echo "Usage: builda sdk init | install | check | smoke"
+        ;;
+      *)
+        echo "Unknown sdk command: $sub" >&2
+        echo "Usage: builda sdk init | install | check | smoke" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  bundle-check)
+    bundle_check "$@"
+    ;;
+  assets)
+    sub="${1:-}"
+    shift || true
+    case "$sub" in
+      check)
+        assets_check_zip "${1:-}"
+        ;;
+      upload)
+        assets_upload "${1:-}"
+        ;;
+      ""|-h|--help|help)
+        echo "Usage: builda assets check <zip> | upload <zip>"
+        ;;
+      *)
+        echo "Unknown assets command: $sub" >&2
+        echo "Usage: builda assets check <zip> | upload <zip>" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  upload-build)
+    need_token
+    zip="${1:-}"
+    engine="$(manifest_engine "$MANIFEST")"
+    bundle_check --engine "$engine" "$zip" >/dev/null
+    identity="$(bundle_identity "$zip" "$engine")"
+    expected_size="$(printf '%s\n' "$identity" | sed -n '1p')"
+    expected_sha="$(printf '%s\n' "$identity" | sed -n '2p')"
+    studio_payload_hash=""
+    if [ -n "${BUILDA_PUBLISH_OPERATION_ID:-}" ]; then
+      studio_payload_hash="$(printf '%s\n' "$identity" | sed -n '3p')"
+    fi
+    game_id="$(project_game_id)"
+    idempotency="${BUILDA_PUBLISH_OPERATION_ID:-$(upload_idempotency_key "$engine" "$game_id" "$expected_sha")}"
+    resp="$(run_session_upload "$zip" "$engine" "$game_id" "$expected_size" "$expected_sha" "$idempotency" "$studio_payload_hash")"
+    printf '%s\n' "$resp" > "$ROOT/last-build.json"
+    prefix="$(printf '%s' "$resp" | json_field prefix)"
+    entry="$(printf '%s' "$resp" | json_field entry)"
+    size="$(printf '%s' "$resp" | json_number size)"
+    bundle_url="$(printf '%s' "$resp" | json_field bundleUrl)"
+    bundle_md5="$(printf '%s' "$resp" | json_field bundleMd5)"
+    bundle_version="$(printf '%s' "$resp" | json_field bundleVersion)"
+    bundle_entry="$(printf '%s' "$resp" | json_field bundleEntry)"
+    bundle_size="$(printf '%s' "$resp" | json_number bundleSize)"
+    echo "$resp"
+    if [ -n "$prefix" ]; then
+      if [ ! -f "$MANIFEST" ]; then "$0" new-manifest >/dev/null; fi
+      update_manifest_build_fields "$MANIFEST" "$resp"
+      echo "Updated $MANIFEST with build and H5 Bundle fields."
+    fi
+    ;;
+  upload-status)
+    need_token
+    query_upload_session "${1:-}"
+    ;;
+  upload-cancel)
+    need_token
+    cancel_upload_session "${1:-}"
+    ;;
+  publish)
+    zip="${1:-}"
+    file="${2:-$MANIFEST}"
+    case "$zip" in
+      -h|--help|help)
+        echo "Usage: builda publish [build.zip] [manifest]"
+        exit 0
+        ;;
+    esac
+    [ -f "$file" ] || { echo "manifest not found: $file" >&2; exit 1; }
+    sync_online_compatibility_revision "$file"
+    preflight_manifest_for_draft "$file"
+    if [ -n "$zip" ]; then
+      [ -f "$zip" ] || { echo "build zip not found: $zip" >&2; exit 1; }
+      BUILDA_MANIFEST="$file" "$0" upload-build "$zip"
+    fi
+    inject_sdk_version "$file"
+    pending_create=""
+    if [ -z "${BUILDA_PUBLISH_OPERATION_ID:-}" ]; then
+      pending_create="$(draft_idempotency_key create "" "$file" 1)"
+    fi
+    if [ -n "$pending_create" ]; then
+      "$0" create-draft "$file"
+    elif [ -n "$(project_game_id)" ]; then
+      "$0" update-draft "" "$file"
+    else
+      "$0" create-draft "$file"
+    fi
+    ;;
+  create-draft)
+    file="${1:-$MANIFEST}"
+    case "$file" in
+      -h|--help|help)
+        echo "Usage: builda create-draft [manifest]"
+        exit 0
+        ;;
+    esac
+    [ -f "$file" ] || { echo "manifest not found: $file" >&2; exit 1; }
+    sync_online_compatibility_revision "$file"
+    preflight_manifest_for_draft "$file"
+    inject_sdk_version "$file"
+    need_token
+    write_publish_preflight create-draft new >&2
+    migrate_legacy_project_file
+    operation_id=""
+    if [ -z "${BUILDA_PUBLISH_OPERATION_ID:-}" ]; then
+      operation_id="$(draft_idempotency_key create "" "$file" 1)"
+    fi
+    if [ -f "$PROJECT_FILE" ]; then
+      existing_id="$(project_game_id)"
+      if [ -n "$existing_id" ] && [ -z "$operation_id" ]; then
+        echo "$PROJECT_FILE already binds this project to $existing_id. Use: builda update-draft" >&2
+        exit 1
+      fi
+    fi
+    if [ -n "${BUILDA_PUBLISH_OPERATION_ID:-}" ]; then
+      resp="$(authenticated_http_request "create draft" -X POST "$(cmd_url game/create)" -H "Idempotency-Key: $BUILDA_PUBLISH_OPERATION_ID" -H "X-Builda-Studio-Publish-Id: $BUILDA_PUBLISH_OPERATION_ID" -H "X-Builda-Publish-Lease-Id: ${BUILDA_PUBLISH_LEASE_ID:?missing publish lease}" -H "X-Builda-Publish-Attempt: ${BUILDA_PUBLISH_ATTEMPT:?missing publish attempt}" -H 'Content-Type: application/json' --data-binary "@$file")"
+    else
+      [ -n "$operation_id" ] || operation_id="$(draft_idempotency_key create "" "$file")"
+      resp="$(authenticated_http_request "create draft" -X POST "$(cmd_url game/create)" -H "Idempotency-Key: $operation_id" -H 'Content-Type: application/json' --data-binary "@$file")"
+    fi
+    cmd_response_ok_or_exit "create draft" "$resp"
+    printf '%s\n' "$resp" > "$ROOT/last-draft.json"
+    game_id="$(printf '%s' "$resp" | { if command -v jq >/dev/null 2>&1; then jq -r '.body.game.id // empty'; else sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1; fi; })"
+    version_id="$(printf '%s' "$resp" | { if command -v jq >/dev/null 2>&1; then jq -r '.body.game.versionId // .body.game.draftVersionId // empty'; else sed -n 's/.*"versionId"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1; fi; })"
+    title="$(manifest_title "$file")"
+    [ -n "$game_id" ] && printf '%s' "$game_id" > "$ROOT/last-game-id"
+    [ -n "$game_id" ] && printf '%s' "$game_id" > "$ROOT/last-draft-id"
+    [ -n "$version_id" ] && printf '%s' "$version_id" > "$ROOT/last-version-id"
+    write_project_game "$game_id" "$title" "$version_id"
+    [ -n "${operation_id:-}" ] && complete_draft_operation "$operation_id"
+    echo "sync=ok builda-current-version=$version_id builda-stage=pending-app-publish" >&2
+    echo "$resp"
+    ;;
+  update-draft)
+    id="${1:-}"
+    case "$id" in
+      -h|--help|help)
+        echo "Usage: builda update-draft [game_id] [manifest]"
+        exit 0
+        ;;
+    esac
+    file="${2:-$MANIFEST}"
+    if [ -n "$id" ] && [ -f "$id" ]; then file="$id"; id=""; fi
+    if [ -z "$id" ]; then id="$(project_game_id)"; fi
+    if [ -z "$id" ] && [ -f "$ROOT/last-game-id" ]; then
+      weak_id="$(cat "$ROOT/last-game-id")"
+      echo "No $PROJECT_FILE in this project. Found receipt last-game-id=$weak_id in $ROOT (weak recovery hint from an earlier draft in this project)." >&2
+      echo "Pass the intended id explicitly once: builda update-draft $weak_id" >&2
+      exit 1
+    fi
+    [ -n "$id" ] || { echo "game id required. Put $PROJECT_STATE_DIR/game.json in this project or pass game id explicitly." >&2; exit 1; }
+    [ -f "$file" ] || { echo "manifest not found: $file" >&2; exit 1; }
+    sync_online_compatibility_revision "$file"
+    preflight_manifest_for_draft "$file"
+    inject_sdk_version "$file"
+    need_token
+    write_publish_preflight update-draft "$id" >&2
+    tmp="$(mktemp)"
+    if command -v jq >/dev/null 2>&1; then
+      jq --arg id "$id" '.id=$id' "$file" > "$tmp"
+    elif command -v python3 >/dev/null 2>&1; then
+      python3 - "$file" "$id" > "$tmp" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+data["id"] = sys.argv[2]
+json.dump(data, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+PY
+    else
+      echo "update-draft requires jq or python3 to merge game id into the manifest safely." >&2
+      exit 1
+    fi
+    if [ -n "${BUILDA_PUBLISH_OPERATION_ID:-}" ]; then
+      resp="$(authenticated_http_request "update draft" -X POST "$(cmd_url game/updatedraft)" -H "Idempotency-Key: $BUILDA_PUBLISH_OPERATION_ID" -H "X-Builda-Studio-Publish-Id: $BUILDA_PUBLISH_OPERATION_ID" -H "X-Builda-Publish-Lease-Id: ${BUILDA_PUBLISH_LEASE_ID:?missing publish lease}" -H "X-Builda-Publish-Attempt: ${BUILDA_PUBLISH_ATTEMPT:?missing publish attempt}" -H 'Content-Type: application/json' --data-binary "@$tmp")"
+    else
+      operation_id="$(draft_idempotency_key update "$id" "$file")"
+      resp="$(authenticated_http_request "update draft" -X POST "$(cmd_url game/updatedraft)" -H "Idempotency-Key: $operation_id" -H 'Content-Type: application/json' --data-binary "@$tmp")"
+    fi
+    rm -f "$tmp"
+    cmd_response_ok_or_exit "update draft" "$resp"
+    printf '%s\n' "$resp" > "$ROOT/last-draft.json"
+    game_id="$(printf '%s' "$resp" | { if command -v jq >/dev/null 2>&1; then jq -r '.body.game.id // empty'; else sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1; fi; })"
+    version_id="$(printf '%s' "$resp" | { if command -v jq >/dev/null 2>&1; then jq -r '.body.game.versionId // .body.game.draftVersionId // empty'; else sed -n 's/.*"versionId"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1; fi; })"
+    [ -n "$game_id" ] || game_id="$id"
+    title="$(manifest_title "$file")"
+    [ -n "$game_id" ] && printf '%s' "$game_id" > "$ROOT/last-game-id"
+    [ -n "$game_id" ] && printf '%s' "$game_id" > "$ROOT/last-draft-id"
+    [ -n "$version_id" ] && printf '%s' "$version_id" > "$ROOT/last-version-id"
+    write_project_game "$game_id" "$title" "$version_id"
+    [ -n "${operation_id:-}" ] && complete_draft_operation "$operation_id"
+    echo "sync=ok builda-current-version=$version_id builda-stage=pending-app-publish" >&2
+    echo "$resp"
+    ;;
+	  status)
+    echo "root=$ROOT"
+    [ -f "$TOKEN_FILE" ] && echo "grant=present" || echo "grant=missing"
+    [ -f "$REFRESH_FILE" ] && echo "agent-authorization=present" || echo "agent-authorization=missing"
+    if [ -f "$TOKEN_FILE" ]; then
+      if ! write_acting_identity; then
+        echo "identity=unavailable"
+      fi
+    else
+      echo "identity=unavailable"
+    fi
+    [ -f "$MANIFEST" ] && echo "manifest=$MANIFEST"
+    if [ -f "$PROJECT_FILE" ]; then
+      pgid="$(project_game_id)"
+      [ -n "$pgid" ] && echo "project-game-id=$pgid" || echo "project-game-id=invalid"
+      echo "project-binding=$PROJECT_FILE"
+      echo "project-state-dir=$(dirname "$PROJECT_FILE")"
+    fi
+    [ -f "$ROOT/last-build.json" ] && echo "last-build=$ROOT/last-build.json"
+    [ -f "$ROOT/last-assets.json" ] && echo "last-assets=$ROOT/last-assets.json"
+    [ -f "$ROOT/last-game-id" ] && echo "last-game-id=$(cat "$ROOT/last-game-id") (project-local receipt; game.json is the identity)"
+    [ -f "$ROOT/last-version-id" ] && echo "last-version-id=$(cat "$ROOT/last-version-id")"
+	    true
+	    ;;
+	  uninstall)
+	    uninstall_builda "${1:-}"
+	    ;;
+	  ""|-h|--help|help) usage ;;
+  *) echo "Unknown command: $cmd" >&2; usage; exit 1 ;;
+esac
