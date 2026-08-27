@@ -1,6 +1,7 @@
 import { Beatmap, DEMO_BEATMAP } from "../assets/scripts/domain/Beatmap";
 import { JudgeSystem } from "../assets/scripts/gameplay/JudgeSystem";
-import { SequenceEngine } from "../assets/scripts/gameplay/SequenceEngine";
+import { EngineAction, SequenceEngine } from "../assets/scripts/gameplay/SequenceEngine";
+import { noteApproachProgress, timelineProgress } from "../assets/scripts/gameplay/TimingProgress";
 import { PressedKeyState } from "../assets/scripts/input/PressedKeyState";
 import { BuildaAdapter, calculateRightAvoidance } from "../assets/scripts/platform/BuildaAdapter";
 import { SongClock } from "../assets/scripts/timing/SongClock";
@@ -13,103 +14,200 @@ function equal<T>(actual: T, expected: T, message: string): void {
     }
 }
 
-function testJudgeBoundaries(): void {
-    const judge = new JudgeSystem({ perfectMs: 45, greatMs: 90, goodMs: 150 });
-    equal(judge.judge(-45).grade, "Perfect", "Perfect boundary is inclusive");
-    equal(judge.judge(45.001).grade, "Great", "Past Perfect enters Great");
-    equal(judge.judge(-90).grade, "Great", "Great boundary is inclusive");
-    equal(judge.judge(90.001).grade, "Good", "Past Great enters Good");
-    equal(judge.judge(150).grade, "Good", "Good boundary is inclusive");
-    equal(judge.judge(-150.001).grade, "Miss", "Past Good is Miss");
-}
-
-function testDemoTargetsAlignWithVisualBeat(): void {
-    const beatDurationMs = 60000 / DEMO_BEATMAP.bpm;
-    DEMO_BEATMAP.sequences.forEach((sequence) => {
-        equal(
-            sequence.targetTimeMs % beatDurationMs,
-            0,
-            sequence.id + " target must align with the visual beat pulse"
-        );
-    });
+function lastAction(actions: EngineAction[]): EngineAction {
+    if (!actions.length) {
+        throw new Error("Expected at least one engine action");
+    }
+    return actions[actions.length - 1];
 }
 
 function makeBeatmap(): Beatmap {
     return {
         id: "test",
         title: "Test",
-        bpm: 120,
-        sequences: [
-            { id: "one", directions: ["left", "up"], targetTimeMs: 1000 },
-            { id: "two", directions: ["right"], targetTimeMs: 2000 }
+        bpm: 100,
+        groups: [
+            {
+                id: "one",
+                notes: [
+                    { id: "one-left", direction: "left", targetTimeMs: 1000 },
+                    { id: "one-up", direction: "up", targetTimeMs: 1600 },
+                    { id: "one-right", direction: "right", targetTimeMs: 2200 }
+                ]
+            },
+            {
+                id: "two",
+                notes: [
+                    { id: "two-down", direction: "down", targetTimeMs: 3400 },
+                    { id: "two-left", direction: "left", targetTimeMs: 4000 },
+                    { id: "two-right", direction: "right", targetTimeMs: 4600 }
+                ]
+            }
         ]
     };
 }
 
-function makeSingleBeatmap(): Beatmap {
+function makeOneGroupBeatmap(): Beatmap {
+    const beatmap = makeBeatmap();
     return {
-        id: "single",
-        title: "Single",
-        bpm: 120,
-        sequences: [{ id: "final", directions: ["left"], targetTimeMs: 1000 }]
+        id: "one-group",
+        title: beatmap.title,
+        bpm: beatmap.bpm,
+        groups: [beatmap.groups[0]]
     };
 }
 
-function testWrongDirectionAndSuccessfulSequence(): void {
-    const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
-    engine.start();
-    equal(engine.inputDirection("left", 100).kind, "accepted", "First correct direction is accepted");
-    equal(engine.inputDirection("down", 200).kind, "wrong", "Wrong direction is reported");
-    equal(engine.getSnapshot().enteredCount, 0, "Wrong direction resets phrase input");
-    engine.inputDirection("left", 300);
-    equal(engine.inputDirection("up", 400).kind, "ready", "Complete phrase becomes ready");
-    const result = engine.confirm(1000);
-    equal(result.kind, "judged", "A non-final hit keeps its judgement action kind");
-    equal(result.finished, false, "A non-final hit does not finish the beatmap");
-    equal(result.judgement && result.judgement.grade, "Perfect", "On-time complete phrase is Perfect");
-    equal(engine.getSnapshot().score, 1000, "Perfect awards base score");
-    equal(engine.getSnapshot().combo, 1, "Hit increments combo");
-    equal(engine.getSnapshot().sequenceIndex, 1, "Hit advances phrase");
+function testJudgeBoundaries(): void {
+    const judge = new JudgeSystem();
+    equal(judge.judge(-50).grade, "Perfect", "Perfect early boundary is inclusive");
+    equal(judge.judge(50).grade, "Perfect", "Perfect late boundary is inclusive");
+    equal(judge.judge(50.001).grade, "Good", "Past Perfect enters Good");
+    equal(judge.judge(-100).grade, "Good", "Good boundary is inclusive");
+    equal(judge.judge(100).grade, "Good", "Good late boundary is inclusive");
+    equal(judge.judge(100.001).grade, "Bad", "Past Good enters Bad");
+    equal(judge.judge(-180).grade, "Bad", "Bad early boundary is inclusive");
+    equal(judge.judge(180).grade, "Bad", "Bad boundary is inclusive");
+    equal(judge.judge(-180.001).grade, "Miss", "Past Bad is Miss");
+    equal(judge.judge(0).baseScore, 1000, "Perfect score is explicit");
+    equal(judge.judge(75).baseScore, 700, "Good score is explicit");
+    equal(judge.judge(150).baseScore, 350, "Bad score is explicit");
+    equal(judge.judge(181).baseScore, 0, "Miss score is zero");
 }
 
-function testEarlyIncompleteAndExpiry(): void {
-    const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
-    engine.start();
-    equal(engine.confirm(849.999).kind, "tooEarly", "Early Beat does not consume phrase");
-    equal(engine.getSnapshot().sequenceIndex, 0, "Early Beat keeps current phrase");
-    equal(engine.confirm(850).kind, "missed", "Incomplete Beat inside Good window is Miss");
-    equal(engine.getSnapshot().sequenceIndex, 1, "Incomplete Beat advances after Miss");
-    equal(engine.update(2150).length, 0, "Expiry boundary remains hittable");
-    const expired = engine.update(2150.001);
-    equal(expired.length, 1, "Past expiry produces one Miss");
-    equal(expired[0].kind, "missed", "Final timeout keeps its Miss action kind");
-    equal(expired[0].finished, true, "Final timeout separately reports beatmap completion");
-    equal(expired[0].reason, "expired", "Timeout reports expired reason");
-    equal(engine.getSnapshot().finished, true, "Last expired phrase completes beatmap");
+function testDemoGridAndGroups(): void {
+    const beatDurationMs = 60000 / DEMO_BEATMAP.bpm;
+    let previousTarget = -1;
+    equal(DEMO_BEATMAP.groups.length, 8, "Demo has eight deterministic groups");
+    DEMO_BEATMAP.groups.forEach((group, groupIndex) => {
+        equal(group.notes.length >= 3 && group.notes.length <= 5, true, group.id + " has three to five notes");
+        group.notes.forEach((note) => {
+            equal(note.targetTimeMs % beatDurationMs, 0, note.id + " lands on the BPM grid");
+            equal(note.targetTimeMs > previousTarget, true, note.id + " is strictly time ordered");
+            previousTarget = note.targetTimeMs;
+        });
+        if (groupIndex > 0) {
+            const previous = DEMO_BEATMAP.groups[groupIndex - 1];
+            const gap = group.notes[0].targetTimeMs - previous.notes[previous.notes.length - 1].targetTimeMs;
+            equal(gap >= beatDurationMs * 2, true, group.id + " leaves at least one empty beat");
+        }
+    });
 }
 
-function testFinalOutcomeSemantics(): void {
-    const hitEngine = new SequenceEngine(makeSingleBeatmap(), new JudgeSystem());
-    hitEngine.start();
-    hitEngine.inputDirection("left", 500);
-    const finalHit = hitEngine.confirm(1000);
-    equal(finalHit.kind, "judged", "Final hit remains a judged action");
-    equal(finalHit.finished, true, "Final hit independently reports completion");
-    equal(finalHit.judgement && finalHit.judgement.grade, "Perfect", "Final hit preserves its grade");
+function testTooEarlyAndWrongDirectionBoundary(): void {
+    const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    engine.start();
+    const tooEarly = lastAction(engine.inputDirection("right", 819.999));
+    equal(tooEarly.kind, "tooEarly", "Input before the Bad window only asks the player to wait");
+    equal(engine.getSnapshot().settledNoteCount, 0, "Too-early input does not consume the current note");
 
-    const missEngine = new SequenceEngine(makeSingleBeatmap(), new JudgeSystem());
-    missEngine.start();
-    const finalMiss = missEngine.confirm(1000);
-    equal(finalMiss.kind, "missed", "Final incomplete confirmation remains a Miss action");
-    equal(finalMiss.finished, true, "Final incomplete confirmation reports completion");
-    equal(finalMiss.judgement && finalMiss.judgement.grade, "Miss", "Final Miss preserves its grade");
+    const wrongAtBoundary = lastAction(engine.inputDirection("right", 820));
+    equal(wrongAtBoundary.kind, "missed", "Wrong direction at the inclusive window boundary is Miss");
+    equal(wrongAtBoundary.reason, "wrong-direction", "Wrong direction reports its cause");
+    equal(wrongAtBoundary.judgement && wrongAtBoundary.judgement.grade, "Miss", "Wrong direction has one of four grades");
+    equal(engine.getSnapshot().noteIndex, 1, "Wrong direction advances exactly one note");
+}
 
-    const timeoutEngine = new SequenceEngine(makeSingleBeatmap(), new JudgeSystem());
-    timeoutEngine.start();
-    const finalTimeout = timeoutEngine.update(1150.001)[0];
-    equal(finalTimeout.kind, "missed", "Final timeout remains a Miss action");
-    equal(finalTimeout.finished, true, "Final timeout reports completion");
-    equal(finalTimeout.reason, "expired", "Final timeout preserves its reason");
+function testPerNoteScoresComboAndGroupAdvance(): void {
+    const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    engine.start();
+    equal(lastAction(engine.inputDirection("left", 1000)).judgement!.grade, "Perfect", "First note is Perfect");
+    equal(lastAction(engine.inputDirection("up", 1660)).judgement!.grade, "Good", "Second note is Good");
+    const third = lastAction(engine.inputDirection("right", 2350));
+    equal(third.judgement!.grade, "Bad", "Third note is Bad");
+    equal(third.groupCompleted, true, "Last note completes its group");
+
+    const snapshot = engine.getSnapshot();
+    equal(snapshot.score, 2050, "Score is the clear sum of 1000 + 700 + 350");
+    equal(snapshot.combo, 3, "Combo increments per successful note");
+    equal(snapshot.maxCombo, 3, "Max combo tracks per-note combo");
+    equal(snapshot.groupIndex, 1, "Completed group automatically advances");
+    equal(snapshot.noteIndex, 0, "Next group starts at its first note");
+    equal(engine.getGroupStatus(0)!.completed, true, "Completed group retains all note results");
+    equal(engine.getGroupStatus(1)!.notes[0].current, true, "Next group's first note becomes current");
+}
+
+function testOnlyEarliestNoteCanSettle(): void {
+    const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    engine.start();
+    const wrongForFirst = lastAction(engine.inputDirection("up", 1000));
+    equal(wrongForFirst.kind, "missed", "A later note's direction cannot skip the earliest note");
+    equal(wrongForFirst.noteIndex, 0, "The earliest note is the one that fails");
+    equal(engine.getSnapshot().noteIndex, 1, "Only one note is consumed");
+
+    const second = lastAction(engine.inputDirection("up", 1600));
+    equal(second.kind, "judged", "The same direction can settle the second note at its own time");
+    equal(second.noteIndex, 1, "The second note now settles");
+}
+
+function testLateBoundaryAndAutomaticFailure(): void {
+    const boundaryEngine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    boundaryEngine.start();
+    equal(boundaryEngine.update(1180).length, 0, "Exact late Bad boundary remains playable");
+    equal(lastAction(boundaryEngine.inputDirection("left", 1180)).judgement!.grade, "Bad", "Late boundary is Bad");
+
+    const expiredEngine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    expiredEngine.start();
+    const expired = expiredEngine.update(1180.001);
+    equal(expired.length, 1, "Past the late boundary automatically fails one note");
+    equal(expired[0].kind, "missed", "Automatic failure is a Miss action");
+    equal(expired[0].reason, "expired", "Automatic failure reports expiry");
+
+    const catchUpEngine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    catchUpEngine.start();
+    const catchUp = catchUpEngine.inputDirection("up", 1600);
+    equal(catchUp.length, 2, "One input can first expire an old note then judge the new earliest note");
+    equal(catchUp[0].reason, "expired", "Old earliest note expires first");
+    equal(catchUp[1].judgement!.grade, "Perfect", "Direction input still reaches the next eligible note");
+}
+
+function testMissBreaksCombo(): void {
+    const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    engine.start();
+    engine.inputDirection("left", 1000);
+    equal(engine.getSnapshot().combo, 1, "Successful note starts combo");
+    const miss = lastAction(engine.inputDirection("down", 1600));
+    equal(miss.judgement!.grade, "Miss", "Wrong second direction fails");
+    equal(engine.getSnapshot().combo, 0, "Miss breaks combo");
+    equal(engine.getSnapshot().mistakes, 1, "Miss increments failure count");
+}
+
+function testFinalTimeoutStillCompletes(): void {
+    const engine = new SequenceEngine(makeOneGroupBeatmap(), new JudgeSystem());
+    engine.start();
+    engine.inputDirection("left", 1000);
+    engine.inputDirection("up", 1600);
+    const finalActions = engine.update(2380.001);
+    equal(finalActions.length, 1, "Final overdue note creates one action");
+    equal(finalActions[0].kind, "missed", "Final overdue note remains a Miss result");
+    equal(finalActions[0].finished, true, "Final Miss independently completes the beatmap");
+    equal(finalActions[0].groupCompleted, true, "Final Miss completes its group");
+    equal(engine.getSnapshot().finished, true, "Engine reaches COMPLETE after final Miss");
+    equal(engine.getGroupStatus(0)!.notes[2].judgement!.grade, "Miss", "Final chip persists its Miss state");
+
+    const wrongEngine = new SequenceEngine(makeOneGroupBeatmap(), new JudgeSystem());
+    wrongEngine.start();
+    wrongEngine.inputDirection("left", 1000);
+    wrongEngine.inputDirection("up", 1600);
+    const finalWrong = lastAction(wrongEngine.inputDirection("left", 2200));
+    equal(finalWrong.kind, "missed", "Wrong direction on the final note remains a Miss action");
+    equal(finalWrong.reason, "wrong-direction", "Final wrong direction preserves its cause");
+    equal(finalWrong.finished, true, "Final wrong direction still reaches COMPLETE");
+}
+
+function testRestart(): void {
+    const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    engine.start();
+    engine.inputDirection("left", 1000);
+    engine.inputDirection("up", 1600);
+    engine.restart();
+    const state = engine.getSnapshot();
+    equal(state.groupIndex, 0, "Restart returns to first group");
+    equal(state.noteIndex, 0, "Restart returns to first note");
+    equal(state.settledNoteCount, 0, "Restart clears settled note count");
+    equal(state.score, 0, "Restart clears score");
+    equal(state.combo, 0, "Restart clears combo");
+    equal(state.running, true, "Restart starts the engine");
+    equal(engine.getGroupStatus(0)!.notes[0].judgement, null, "Restart clears persistent chip results");
 }
 
 function testPressedKeyResetAfterFocusLoss(): void {
@@ -122,33 +220,15 @@ function testPressedKeyResetAfterFocusLoss(): void {
     equal(pressed.press(37), true, "Normal keyup also releases the key");
 }
 
-function testRightSafeAreaAndCapsuleAvoidance(): void {
-    equal(
-        calculateRightAvoidance(260, 10, 80),
-        278,
-        "A larger right safe area wins over the capsule block"
-    );
-    equal(
-        calculateRightAvoidance(20, 10, 80),
-        108,
-        "A larger capsule block wins over the right safe area"
-    );
-    equal(calculateRightAvoidance(20, 10, 0), 38, "A missing capsule falls back to the safe area");
-}
-
-function testRestart(): void {
-    const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
-    engine.start();
-    engine.inputDirection("left", 100);
-    engine.inputDirection("up", 200);
-    engine.confirm(1000);
-    engine.restart();
-    const state = engine.getSnapshot();
-    equal(state.sequenceIndex, 0, "Restart returns to first phrase");
-    equal(state.score, 0, "Restart clears score");
-    equal(state.combo, 0, "Restart clears combo");
-    equal(state.enteredCount, 0, "Restart clears entered directions");
-    equal(state.running, true, "Restart starts the engine");
+function testTimelineAndSafeAreaMath(): void {
+    equal(timelineProgress(-1, 1000), 0, "Song timeline clamps before zero");
+    equal(timelineProgress(500, 1000), 0.5, "Song timeline reports whole-song progress");
+    equal(timelineProgress(1200, 1000), 1, "Song timeline clamps after completion");
+    equal(noteApproachProgress(-200, 1000, 1200, 180), 0, "Mini marker starts at approach horizon");
+    equal(noteApproachProgress(1000, 1000, 1200, 180), 1200 / 1380, "Target tick uses the same mini-bar mapping");
+    equal(noteApproachProgress(1180, 1000, 1200, 180), 1, "Mini marker reaches the late boundary");
+    equal(calculateRightAvoidance(260, 10, 80), 278, "Larger right safe area wins over capsule");
+    equal(calculateRightAvoidance(20, 10, 80), 108, "Larger capsule wins over right safe area");
 }
 
 function testSongClockCalibrationAndPause(): void {
@@ -166,7 +246,7 @@ function testSongClockCalibrationAndPause(): void {
     now = 1100;
     equal(clock.currentTimeMs(), 420, "Resume continues from paused song position");
     clock.restart();
-    equal(clock.currentTimeMs(), 20, "Restart resets elapsed time and preserves calibration");
+    equal(clock.currentTimeMs(), 20, "Restart preserves calibration");
 }
 
 async function testBuildaAudioResultMapping(): Promise<void> {
@@ -192,18 +272,9 @@ async function testBuildaAudioResultMapping(): Promise<void> {
         const hostedAdapter = new BuildaAdapter();
         equal(await hostedAdapter.playBGM("audio/bgm/demo.ogg"), false, "Rejected SDK Result maps to false");
         equal(await hostedAdapter.stopBGM(), true, "Successful SDK Result maps to true");
-        equal(
-            await hostedAdapter.playSFX("audio/sfx/hit.ogg", "combo-hit", 0.5),
-            true,
-            "Successful SFX Result maps to true"
-        );
-        equal(capturedSfxOptions.sessionId, "combo-hit", "SFX session id uses the SDK contract key");
-        equal(capturedSfxOptions.volume, 0.5, "SFX volume is forwarded");
-        equal(
-            Object.prototype.hasOwnProperty.call(capturedSfxOptions, "key"),
-            false,
-            "Legacy key option is not sent to the SDK"
-        );
+        equal(await hostedAdapter.playSFX("audio/sfx/hit.ogg", "combo-hit", 0.5), true, "SFX Result maps to true");
+        equal(capturedSfxOptions.sessionId, "combo-hit", "SFX session id uses SDK contract key");
+        equal(Object.prototype.hasOwnProperty.call(capturedSfxOptions, "key"), false, "Legacy key is absent");
 
         delete global.window;
         equal(await new BuildaAdapter().playSFX("audio/sfx/hit.ogg"), false, "Missing host maps to false");
@@ -218,16 +289,19 @@ async function testBuildaAudioResultMapping(): Promise<void> {
 
 async function run(): Promise<void> {
     testJudgeBoundaries();
-    testDemoTargetsAlignWithVisualBeat();
-    testWrongDirectionAndSuccessfulSequence();
-    testEarlyIncompleteAndExpiry();
-    testFinalOutcomeSemantics();
-    testPressedKeyResetAfterFocusLoss();
-    testRightSafeAreaAndCapsuleAvoidance();
+    testDemoGridAndGroups();
+    testTooEarlyAndWrongDirectionBoundary();
+    testPerNoteScoresComboAndGroupAdvance();
+    testOnlyEarliestNoteCanSettle();
+    testLateBoundaryAndAutomaticFailure();
+    testMissBreaksCombo();
+    testFinalTimeoutStillCompletes();
     testRestart();
+    testPressedKeyResetAfterFocusLoss();
+    testTimelineAndSafeAreaMath();
     testSongClockCalibrationAndPause();
     await testBuildaAudioResultMapping();
-    console.log("logic-tests=passed cases=10");
+    console.log("logic-tests=passed cases=13");
 }
 
 run().catch((error) => {

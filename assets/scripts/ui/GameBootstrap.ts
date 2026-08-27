@@ -1,6 +1,7 @@
 import { DEMO_BEATMAP, Direction } from "../domain/Beatmap";
-import { EngineAction, SequenceEngine } from "../gameplay/SequenceEngine";
-import { JudgeSystem } from "../gameplay/JudgeSystem";
+import { GroupNoteStatus, EngineAction, SequenceEngine } from "../gameplay/SequenceEngine";
+import { DEFAULT_JUDGE_WINDOWS, JudgeGrade, JudgeSystem } from "../gameplay/JudgeSystem";
+import { noteApproachProgress, timelineProgress } from "../gameplay/TimingProgress";
 import { InputRouter } from "../input/InputRouter";
 import { BuildaAdapter, BuildaViewportMetrics, calculateRightAvoidance } from "../platform/BuildaAdapter";
 import { SongClock } from "../timing/SongClock";
@@ -14,35 +15,72 @@ const ARROW_TEXT: { [key: string]: string } = {
     right: "→"
 };
 
+const DIRECTION_NAME: { [key: string]: string } = {
+    left: "左",
+    down: "下",
+    up: "上",
+    right: "右"
+};
+
+const GRADE_TEXT: { [key: string]: string } = {
+    Perfect: "完美",
+    Good: "好",
+    Bad: "差",
+    Miss: "失败"
+};
+
+const NOTE_APPROACH_MS = 1200;
+const GROUP_RESULT_HOLD_MS = 420;
+
+interface NoteChipView {
+    node: cc.Node;
+    card: cc.Graphics;
+    miniBar: cc.Graphics;
+    arrow: cc.Label;
+    status: cc.Label;
+    noteIndex: number;
+    width: number;
+    height: number;
+}
+
 @ccclass
 export default class GameBootstrap extends cc.Component {
     private readonly adapter: BuildaAdapter = new BuildaAdapter();
     private readonly clock: SongClock = new SongClock();
     private readonly judge: JudgeSystem = new JudgeSystem();
     private readonly engine: SequenceEngine = new SequenceEngine(DEMO_BEATMAP, this.judge);
+    private readonly songDurationMs: number =
+        DEMO_BEATMAP.groups[DEMO_BEATMAP.groups.length - 1].notes.slice(-1)[0].targetTimeMs
+        + DEFAULT_JUDGE_WINDOWS.badMs;
     private input: InputRouter | null = null;
 
     private root: cc.Node = null;
     private background: cc.Graphics = null;
-    private sequencePanel: cc.Graphics = null;
+    private stage: cc.Graphics = null;
+    private dancerNode: cc.Node = null;
+    private groupPanel: cc.Graphics = null;
     private sequenceRow: cc.Node = null;
-    private timeline: cc.Graphics = null;
-    private pulseNode: cc.Node = null;
+    private globalTimeline: cc.Graphics = null;
     private scoreLabel: cc.Label = null;
     private comboLabel: cc.Label = null;
-    private phraseLabel: cc.Label = null;
-    private countdownLabel: cc.Label = null;
-    private judgementLabel: cc.Label = null;
-    private instructionLabel: cc.Label = null;
-    private titleLabel: cc.Label = null;
+    private levelLabel: cc.Label = null;
+    private trackLabel: cc.Label = null;
     private hostLabel: cc.Label = null;
+    private judgementLabel: cc.Label = null;
+    private groupLabel: cc.Label = null;
+    private progressLabel: cc.Label = null;
+    private instructionLabel: cc.Label = null;
     private directionPad: cc.Node = null;
-    private beatButton: cc.Node = null;
     private restartButton: cc.Node = null;
+    private directionButtons: cc.Node[] = [];
+    private noteChipViews: NoteChipView[] = [];
 
     private viewportWidth: number = 1280;
     private viewportHeight: number = 720;
-    private panelWidth: number = 960;
+    private panelWidth: number = 1000;
+    private panelHeight: number = 174;
+    private stageBaseY: number = 92;
+    private globalBarWidth: number = 900;
     private metrics: BuildaViewportMetrics = {
         safe: { top: 0, right: 0, bottom: 0, left: 0 },
         capsule: { top: 0, right: 0, width: 0, height: 0 },
@@ -51,7 +89,11 @@ export default class GameBootstrap extends cc.Component {
     private platformReady: boolean = false;
     private pausedByHost: boolean = false;
     private hostSuspended: boolean = false;
-    private sequenceRenderKey: string = "";
+    private groupRenderKey: string = "";
+    private heldGroupIndex: number = -1;
+    private holdUntilSongTimeMs: number = 0;
+    private lastResultText: string = "等待第一键";
+    private lastResultColor: cc.Color = null;
     private messageExpiresAtMs: number = 0;
     private resizeHandler: (() => void) | null = null;
     private visibilityHandler: (() => void) | null = null;
@@ -62,10 +104,10 @@ export default class GameBootstrap extends cc.Component {
     protected onLoad(): void {
         cc.game.setFrameRate(60);
         cc.view.resizeWithBrowserSize(true);
+        this.lastResultColor = cc.color(159, 176, 255);
         this.buildUi();
         this.input = new InputRouter(
             (direction) => this.onDirection(direction),
-            () => this.onBeat(),
             () => this.restartGame()
         );
         this.input.attach();
@@ -86,8 +128,9 @@ export default class GameBootstrap extends cc.Component {
             this.visibilityHandler = this.onVisibilityChange.bind(this);
             document.addEventListener("visibilitychange", this.visibilityHandler);
         }
+
         this.layout();
-        this.setJudgement("CONNECTING", cc.color(159, 176, 255), Number.POSITIVE_INFINITY);
+        this.showTransient("正在连接宿主", cc.color(159, 176, 255), Number.POSITIVE_INFINITY);
         if (this.isDocumentHidden()) {
             this.pauseForHost();
         }
@@ -131,15 +174,17 @@ export default class GameBootstrap extends cc.Component {
         if (!this.platformReady || !this.clock.isStarted() || this.clock.isPaused()) {
             return;
         }
-        const songTimeMs = this.clock.currentTimeMs();
-        const timeoutActions = this.engine.update(songTimeMs);
-        timeoutActions.forEach((action) => this.presentAction(action, songTimeMs));
-        this.updateTimeline(songTimeMs);
-        this.refreshStats();
-        this.renderSequenceIfNeeded();
 
-        if (!this.engine.getSnapshot().finished && songTimeMs > this.messageExpiresAtMs) {
-            this.judgementLabel.string = "";
+        const songTimeMs = this.clock.currentTimeMs();
+        this.presentActions(this.engine.update(songTimeMs), songTimeMs);
+        this.renderGroup(songTimeMs);
+        this.updateNoteChips(songTimeMs);
+        this.updateGlobalTimeline(songTimeMs);
+        this.updateStage(songTimeMs);
+        this.refreshStats();
+
+        if (this.messageExpiresAtMs > 0 && songTimeMs > this.messageExpiresAtMs) {
+            this.restoreLastResult();
         }
     }
 
@@ -152,42 +197,40 @@ export default class GameBootstrap extends cc.Component {
         backgroundNode.parent = this.root;
         this.background = backgroundNode.addComponent(cc.Graphics);
 
-        const panelNode = new cc.Node("SequencePanel");
-        panelNode.parent = this.root;
-        this.sequencePanel = panelNode.addComponent(cc.Graphics);
+        const stageNode = new cc.Node("OriginalStage");
+        stageNode.parent = this.root;
+        this.stage = stageNode.addComponent(cc.Graphics);
 
-        this.titleLabel = this.makeLabel(this.root, "Title", DEMO_BEATMAP.title, 26, cc.color(220, 228, 255));
-        this.hostLabel = this.makeLabel(this.root, "Host", "INITIALIZING", 12, cc.color(104, 226, 255));
-        this.scoreLabel = this.makeLabel(this.root, "Score", "SCORE 000000", 24, cc.color(241, 245, 255));
-        this.comboLabel = this.makeLabel(this.root, "Combo", "COMBO 0", 18, cc.color(104, 226, 255));
-        this.phraseLabel = this.makeLabel(this.root, "Phrase", "PHRASE 1 / 8", 16, cc.color(157, 169, 205));
-        this.countdownLabel = this.makeLabel(this.root, "Countdown", "NEXT BEAT", 15, cc.color(157, 169, 205));
-        this.judgementLabel = this.makeLabel(this.root, "Judgement", "", 44, cc.color(255, 255, 255));
+        this.dancerNode = new cc.Node("AbstractDancer");
+        this.dancerNode.parent = this.root;
+        this.drawDancer(this.dancerNode.addComponent(cc.Graphics));
+
+        const panelNode = new cc.Node("CurrentGroupPanel");
+        panelNode.parent = this.root;
+        this.groupPanel = panelNode.addComponent(cc.Graphics);
+
+        this.levelLabel = this.makeLabel(this.root, "Level", "STAGE 01 · 节拍训练场", 20, cc.color(234, 240, 255));
+        this.trackLabel = this.makeLabel(this.root, "Track", DEMO_BEATMAP.title, 14, cc.color(159, 176, 255));
+        this.hostLabel = this.makeLabel(this.root, "Host", "正在初始化", 11, cc.color(104, 226, 255));
+        this.scoreLabel = this.makeLabel(this.root, "Score", "得分\n000000", 31, cc.color(245, 248, 255));
+        this.judgementLabel = this.makeLabel(this.root, "Judgement", "等待第一键", 23, cc.color(159, 176, 255));
+        this.comboLabel = this.makeLabel(this.root, "Combo", "连击 0\n最高 0", 21, cc.color(104, 226, 255));
+        this.groupLabel = this.makeLabel(this.root, "Group", "组合 1 / 8", 15, cc.color(192, 202, 233));
+        this.progressLabel = this.makeLabel(this.root, "Progress", "谱面 0% · 等待开始", 13, cc.color(192, 202, 233));
         this.instructionLabel = this.makeLabel(
             this.root,
             "Instruction",
-            "ARROWS / WASD TO ENTER · SPACE / ENTER ON BEAT",
-            15,
+            "方向键 / WASD · 在每个箭头的目标时刻直接输入",
+            13,
             cc.color(145, 157, 194)
         );
 
-        this.sequenceRow = new cc.Node("SequenceRow");
+        this.sequenceRow = new cc.Node("GroupNotes");
         this.sequenceRow.parent = this.root;
 
-        const timelineNode = new cc.Node("Timeline");
-        timelineNode.parent = this.root;
-        this.timeline = timelineNode.addComponent(cc.Graphics);
-
-        this.pulseNode = new cc.Node("BeatPulse");
-        this.pulseNode.parent = this.root;
-        const pulseGraphics = this.pulseNode.addComponent(cc.Graphics);
-        pulseGraphics.fillColor = cc.color(104, 226, 255, 50);
-        pulseGraphics.circle(0, 0, 25);
-        pulseGraphics.fill();
-        pulseGraphics.strokeColor = cc.color(104, 226, 255, 180);
-        pulseGraphics.lineWidth = 3;
-        pulseGraphics.circle(0, 0, 25);
-        pulseGraphics.stroke();
+        const globalTimelineNode = new cc.Node("SongJudgeTimeline");
+        globalTimelineNode.parent = this.root;
+        this.globalTimeline = globalTimelineNode.addComponent(cc.Graphics);
 
         this.directionPad = new cc.Node("DirectionPad");
         this.directionPad.parent = this.root;
@@ -196,33 +239,24 @@ export default class GameBootstrap extends cc.Component {
             const button = this.makeTapButton(
                 this.directionPad,
                 "Touch-" + direction,
-                ARROW_TEXT[direction],
+                ARROW_TEXT[direction] + "  " + DIRECTION_NAME[direction],
+                136,
                 84,
-                84,
-                cc.color(44, 54, 94),
+                cc.color(33, 43, 77),
                 cc.color(104, 226, 255),
                 () => this.input && this.input.routeDirection(direction)
             );
-            button.x = (index - 1.5) * 96;
+            button.x = (index - 1.5) * 150;
+            this.directionButtons.push(button);
         });
 
-        this.beatButton = this.makeTapButton(
-            this.root,
-            "BeatButton",
-            "BEAT",
-            156,
-            92,
-            cc.color(116, 62, 205),
-            cc.color(255, 105, 213),
-            () => this.input && this.input.routeBeat()
-        );
         this.restartButton = this.makeTapButton(
             this.root,
             "RestartButton",
-            "RESTART",
-            132,
-            44,
-            cc.color(34, 42, 74),
+            "重新开始",
+            126,
+            40,
+            cc.color(30, 38, 68),
             cc.color(159, 176, 255),
             () => this.input && this.input.routeRestart()
         );
@@ -234,48 +268,83 @@ export default class GameBootstrap extends cc.Component {
         this.viewportHeight = Math.max(540, visible.height || 720);
         this.metrics = this.adapter.viewportMetrics(this.viewportWidth, this.viewportHeight);
         this.root.setContentSize(this.viewportWidth, this.viewportHeight);
-        this.panelWidth = Math.min(980, this.viewportWidth - 96 - this.metrics.safe.left - this.metrics.safe.right);
 
         const halfWidth = this.viewportWidth * 0.5;
         const halfHeight = this.viewportHeight * 0.5;
         const safeTop = this.metrics.safe.top;
         const safeBottom = this.metrics.safe.bottom;
+        const contentWidth = Math.max(320, this.viewportWidth - this.metrics.safe.left - this.metrics.safe.right);
+        const contentCenterX = (this.metrics.safe.left - this.metrics.safe.right) * 0.5;
+        const compact = this.viewportHeight < 640;
+        this.panelWidth = Math.max(320, Math.min(1000, contentWidth - 56));
+        this.panelHeight = compact ? 142 : 174;
+        this.globalBarWidth = Math.max(280, this.panelWidth - 84);
 
         this.drawBackground();
-        this.drawSequencePanel();
+        this.drawStage();
+        this.drawGroupPanel();
 
-        this.titleLabel.node.setPosition(0, halfHeight - safeTop - 35);
-        this.hostLabel.string = this.metrics.hosted ? "BUILDA RUNTIME" : "BROWSER FALLBACK";
-        this.hostLabel.node.setPosition(0, halfHeight - safeTop - 60);
-        this.scoreLabel.node.setPosition(-halfWidth + this.metrics.safe.left + 112, halfHeight - safeTop - 38);
-        this.comboLabel.node.setPosition(-halfWidth + this.metrics.safe.left + 95, halfHeight - safeTop - 69);
+        const topY = halfHeight - safeTop - 25;
+        const leftX = -halfWidth + this.metrics.safe.left + 22;
+        const leftBoxWidth = Math.min(350, Math.max(230, contentWidth * 0.31));
+        this.levelLabel.node.setContentSize(leftBoxWidth, 30);
+        this.levelLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+        this.levelLabel.node.setPosition(leftX + leftBoxWidth * 0.5, topY);
+        this.trackLabel.node.setContentSize(leftBoxWidth, 24);
+        this.trackLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+        this.trackLabel.node.setPosition(leftX + leftBoxWidth * 0.5, topY - 29);
+        this.hostLabel.string = this.metrics.hosted ? "BUILDA RUNTIME" : "浏览器兼容模式";
+        this.hostLabel.node.setContentSize(leftBoxWidth, 20);
+        this.hostLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+        this.hostLabel.node.setPosition(leftX + leftBoxWidth * 0.5, topY - 52);
 
-        this.sequencePanel.node.setPosition(0, 82);
-        this.phraseLabel.node.setPosition(0, 175);
-        this.sequenceRow.setPosition(0, 102);
-        this.timeline.node.setPosition(0, 27);
-        this.countdownLabel.node.setPosition(0, -2);
-        this.pulseNode.setPosition(this.panelWidth * 0.5 - 58, 28);
-        this.judgementLabel.node.setPosition(0, -71);
-        this.instructionLabel.node.setPosition(0, -137);
+        this.scoreLabel.node.setContentSize(320, compact ? 70 : 80);
+        this.scoreLabel.node.setPosition(contentCenterX, topY - 18);
+        this.judgementLabel.node.setContentSize(320, 38);
+        this.judgementLabel.node.setPosition(contentCenterX, topY - (compact ? 67 : 76));
 
-        const controlsY = -halfHeight + safeBottom + 73;
-        this.directionPad.setPosition(-halfWidth + this.metrics.safe.left + 230, controlsY);
-        this.beatButton.setPosition(halfWidth - this.metrics.safe.right - 126, controlsY);
-
-        const capsuleBlock = calculateRightAvoidance(
+        const rightAvoidance = calculateRightAvoidance(
             this.metrics.safe.right,
             this.metrics.capsule.right,
             this.metrics.capsule.width
         );
-        this.restartButton.setPosition(
-            halfWidth - capsuleBlock - 66,
-            halfHeight - Math.max(safeTop, this.metrics.capsule.top) - 34
-        );
+        const rightEdge = halfWidth - rightAvoidance;
+        this.comboLabel.node.setContentSize(210, 66);
+        this.comboLabel.horizontalAlign = cc.Label.HorizontalAlign.RIGHT;
+        this.comboLabel.node.setPosition(rightEdge - 105, topY - 15);
+        this.restartButton.setPosition(rightEdge - 63, topY - 71);
 
-        this.sequenceRenderKey = "";
-        this.renderSequenceIfNeeded();
-        this.updateTimeline(this.clock.isStarted() ? this.clock.currentTimeMs() : 0);
+        const panelY = compact ? -30 : -64;
+        this.groupPanel.node.setPosition(contentCenterX, panelY);
+        this.groupLabel.node.setContentSize(this.panelWidth - 48, 28);
+        this.groupLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+        this.groupLabel.node.setPosition(contentCenterX, panelY + this.panelHeight * 0.5 - 17);
+        this.sequenceRow.setPosition(contentCenterX, panelY - 9);
+
+        this.stageBaseY = panelY + this.panelHeight * 0.5 + (compact ? 49 : 70);
+        this.stage.node.setPosition(contentCenterX, this.stageBaseY);
+        this.dancerNode.setPosition(contentCenterX, this.stageBaseY + 3);
+        this.dancerNode.scale = compact ? 0.78 : 1;
+
+        const buttonHeight = 84;
+        const controlsY = -halfHeight + safeBottom + buttonHeight * 0.5 + 14;
+        const padNaturalWidth = 586;
+        const padScale = Math.max(0.82, Math.min(1, (contentWidth - 32) / padNaturalWidth));
+        this.directionPad.setPosition(contentCenterX, controlsY);
+        this.directionPad.scale = padScale;
+
+        const globalY = controlsY + buttonHeight * padScale * 0.5 + 31;
+        this.globalTimeline.node.setPosition(contentCenterX, globalY);
+        this.progressLabel.node.setContentSize(this.globalBarWidth, 24);
+        this.progressLabel.node.setPosition(contentCenterX, globalY + 22);
+        this.instructionLabel.node.setContentSize(this.globalBarWidth, 22);
+        this.instructionLabel.node.setPosition(contentCenterX, globalY - 17);
+
+        this.groupRenderKey = "";
+        const songTimeMs = this.clock.isStarted() ? this.clock.currentTimeMs() : 0;
+        this.renderGroup(songTimeMs);
+        this.updateNoteChips(songTimeMs);
+        this.updateGlobalTimeline(songTimeMs);
     }
 
     private restartGame(): void {
@@ -285,12 +354,17 @@ export default class GameBootstrap extends cc.Component {
         this.engine.restart();
         this.clock.restart();
         this.pausedByHost = false;
-        this.sequenceRenderKey = "";
-        this.setJudgement("GET READY", cc.color(159, 176, 255), 850);
-        this.instructionLabel.string = "ARROWS / WASD TO ENTER · SPACE / ENTER ON BEAT";
+        this.heldGroupIndex = -1;
+        this.holdUntilSongTimeMs = 0;
+        this.groupRenderKey = "";
+        this.lastResultText = "等待第一键";
+        this.lastResultColor = cc.color(159, 176, 255);
+        this.showTransient("准备", cc.color(159, 176, 255), 800);
+        this.instructionLabel.string = "方向键 / WASD · 在每个箭头的目标时刻直接输入";
         this.refreshStats();
-        this.renderSequenceIfNeeded();
-        this.updateTimeline(0);
+        this.renderGroup(0);
+        this.updateNoteChips(0);
+        this.updateGlobalTimeline(0);
         if (this.hostSuspended) {
             this.pauseForHost();
         }
@@ -301,172 +375,352 @@ export default class GameBootstrap extends cc.Component {
             return;
         }
         const songTimeMs = this.clock.currentTimeMs();
-        this.presentAction(this.engine.inputDirection(direction, songTimeMs), songTimeMs);
-        this.renderSequenceIfNeeded();
+        this.presentActions(this.engine.inputDirection(direction, songTimeMs), songTimeMs);
+        this.renderGroup(songTimeMs);
+        this.updateNoteChips(songTimeMs);
+        this.updateGlobalTimeline(songTimeMs);
         this.refreshStats();
     }
 
-    private onBeat(): void {
-        if (!this.platformReady || this.clock.isPaused()) {
-            return;
-        }
-        const songTimeMs = this.clock.currentTimeMs();
-        this.presentAction(this.engine.confirm(songTimeMs), songTimeMs);
-        this.renderSequenceIfNeeded();
-        this.refreshStats();
+    private presentActions(actions: EngineAction[], songTimeMs: number): void {
+        actions.forEach((action) => this.presentAction(action, songTimeMs));
     }
 
     private presentAction(action: EngineAction, songTimeMs: number): void {
-        if (action.kind === "wrong") {
-            this.setJudgement("WRONG · RESET", cc.color(255, 112, 146), songTimeMs + 520);
-        } else if (action.kind === "ready") {
-            this.setJudgement("SEQUENCE READY", cc.color(104, 226, 255), songTimeMs + 520);
-        } else if (action.kind === "tooEarly") {
-            this.setJudgement("WAIT FOR BEAT", cc.color(255, 210, 112), songTimeMs + 360);
-        } else if (action.judgement) {
-            const suffix = action.finished ? " · COMPLETE" : "";
-            this.setJudgement(
-                action.judgement.grade.toUpperCase() + suffix,
-                this.judgementColor(action.judgement.grade),
-                action.finished ? Number.POSITIVE_INFINITY : songTimeMs + 720
-            );
+        if (action.groupCompleted) {
+            this.heldGroupIndex = action.groupIndex;
+            this.holdUntilSongTimeMs = action.finished
+                ? Number.POSITIVE_INFINITY
+                : songTimeMs + GROUP_RESULT_HOLD_MS;
+            this.groupRenderKey = "";
         }
 
-        if (this.engine.getSnapshot().finished) {
-            this.instructionLabel.string = "SEQUENCE COMPLETE · TAP RESTART OR PRESS R";
+        if (action.kind === "tooEarly") {
+            this.showTransient("还没到判定窗口，请等待", cc.color(255, 210, 112), songTimeMs + 380);
+        } else if (action.judgement) {
+            const timing = action.judgement.grade === "Miss"
+                ? ""
+                : "  " + (action.judgement.deltaMs >= 0 ? "+" : "")
+                    + Math.round(action.judgement.deltaMs) + "ms";
+            const suffix = action.finished ? " · 完成" : "";
+            this.lastResultText = GRADE_TEXT[action.judgement.grade] + timing + suffix;
+            this.lastResultColor = this.judgementColor(action.judgement.grade);
+            this.restoreLastResult();
+        }
+
+        if (action.finished) {
+            this.instructionLabel.string = "COMPLETE / 完成 · 点击重新开始或按 R";
         }
     }
 
     private refreshStats(): void {
         const snapshot = this.engine.getSnapshot();
-        this.scoreLabel.string = "SCORE " + this.padScore(snapshot.score);
-        this.comboLabel.string = "COMBO " + snapshot.combo + "   MAX " + snapshot.maxCombo;
-        const shownIndex = Math.min(snapshot.sequenceIndex + 1, snapshot.sequenceCount);
-        this.phraseLabel.string = "PHRASE " + shownIndex + " / " + snapshot.sequenceCount;
+        this.scoreLabel.string = "得分\n" + this.padScore(snapshot.score);
+        this.comboLabel.string = "连击 " + snapshot.combo + "\n最高 " + snapshot.maxCombo;
+        const songTimeMs = this.clock.isStarted() ? this.clock.currentTimeMs() : 0;
+        const displayIndex = this.displayedGroupIndex(songTimeMs);
+        const showingCompletedGroup = snapshot.finished || displayIndex < snapshot.groupIndex;
+        this.groupLabel.string = "组合 " + (displayIndex + 1) + " / " + snapshot.groupCount
+            + (showingCompletedGroup ? " · 本组结果" : "")
+            + "     已结算 " + snapshot.settledNoteCount + " / " + snapshot.totalNoteCount;
     }
 
-    private renderSequenceIfNeeded(): void {
-        const sequence = this.engine.getCurrentSequence();
-        const snapshot = this.engine.getSnapshot();
-        const key = snapshot.sequenceIndex + ":" + snapshot.enteredCount + ":" + snapshot.finished;
-        if (key === this.sequenceRenderKey) {
+    private renderGroup(songTimeMs: number): void {
+        const displayIndex = this.displayedGroupIndex(songTimeMs);
+        const groupStatus = this.engine.getGroupStatus(displayIndex);
+        if (!groupStatus) {
             return;
         }
-        this.sequenceRenderKey = key;
+        const statusKey = groupStatus.notes.map((item) => {
+            return (item.judgement ? item.judgement.grade : "-") + (item.current ? "*" : "");
+        }).join(",");
+        const key = displayIndex + ":" + statusKey + ":" + this.panelWidth + ":" + this.panelHeight;
+        if (key === this.groupRenderKey) {
+            return;
+        }
+        this.groupRenderKey = key;
         this.sequenceRow.removeAllChildren();
+        this.noteChipViews = [];
 
-        if (!sequence) {
-            const clear = this.makeLabel(this.sequenceRow, "Clear", "ALL PHRASES COMPLETE", 24, cc.color(104, 226, 255));
-            clear.node.setContentSize(this.panelWidth - 80, 60);
-            return;
-        }
-
-        const count = sequence.directions.length;
-        const chipWidth = Math.min(108, (this.panelWidth - 120) / count - 12);
-        const stride = chipWidth + 12;
-        sequence.directions.forEach((direction, index) => {
-            const chip = new cc.Node("Step-" + (index + 1));
+        const count = groupStatus.notes.length;
+        const gap = count === 5 ? 9 : 12;
+        const chipWidth = Math.max(66, Math.min(130, (this.panelWidth - 62 - gap * (count - 1)) / count));
+        const chipHeight = this.panelHeight - 47;
+        const stride = chipWidth + gap;
+        groupStatus.notes.forEach((item, noteIndex) => {
+            const chip = new cc.Node("Note-" + (noteIndex + 1));
             chip.parent = this.sequenceRow;
-            chip.setContentSize(chipWidth, 76);
-            chip.x = (index - (count - 1) * 0.5) * stride;
-            const graphics = chip.addComponent(cc.Graphics);
-            const completed = index < snapshot.enteredCount;
-            const current = index === snapshot.enteredCount;
-            graphics.fillColor = completed
-                ? cc.color(28, 139, 146, 230)
-                : current
-                    ? cc.color(98, 65, 179, 240)
-                    : cc.color(31, 38, 70, 230);
-            graphics.roundRect(-chipWidth * 0.5, -38, chipWidth, 76, 14);
-            graphics.fill();
-            graphics.strokeColor = completed
-                ? cc.color(104, 226, 255)
-                : current
-                    ? cc.color(255, 105, 213)
-                    : cc.color(72, 83, 126);
-            graphics.lineWidth = current ? 4 : 2;
-            graphics.roundRect(-chipWidth * 0.5, -38, chipWidth, 76, 14);
-            graphics.stroke();
-            const arrow = this.makeLabel(chip, "Arrow", ARROW_TEXT[direction], 42, cc.color(245, 248, 255));
-            arrow.node.setContentSize(chipWidth, 64);
+            chip.setContentSize(chipWidth, chipHeight);
+            chip.x = (noteIndex - (count - 1) * 0.5) * stride;
+            const card = chip.addComponent(cc.Graphics);
+
+            const arrow = this.makeLabel(chip, "Arrow", ARROW_TEXT[item.note.direction], 36, cc.color(245, 248, 255));
+            arrow.node.setContentSize(chipWidth - 10, 48);
+            arrow.node.setPosition(0, 22);
+            const status = this.makeLabel(chip, "Status", "未到", 13, cc.color(145, 157, 194));
+            status.node.setContentSize(chipWidth - 8, 22);
+            status.node.setPosition(0, -9);
+
+            const barNode = new cc.Node("MiniJudgeBar");
+            barNode.parent = chip;
+            barNode.setPosition(0, -chipHeight * 0.5 + 18);
+            const miniBar = barNode.addComponent(cc.Graphics);
+            this.noteChipViews.push({
+                node: chip,
+                card,
+                miniBar,
+                arrow,
+                status,
+                noteIndex,
+                width: chipWidth,
+                height: chipHeight
+            });
         });
     }
 
-    private updateTimeline(songTimeMs: number): void {
-        const sequence = this.engine.getCurrentSequence();
-        const width = this.panelWidth - 160;
-        const x = -width * 0.5;
-        this.timeline.clear();
-        this.timeline.lineCap = cc.Graphics.LineCap.ROUND;
-        this.timeline.strokeColor = cc.color(55, 65, 105);
-        this.timeline.lineWidth = 8;
-        this.timeline.moveTo(x, 0);
-        this.timeline.lineTo(x + width, 0);
-        this.timeline.stroke();
-
-        if (!sequence) {
-            this.timeline.strokeColor = cc.color(104, 226, 255);
-            this.timeline.moveTo(x, 0);
-            this.timeline.lineTo(x + width, 0);
-            this.timeline.stroke();
-            this.countdownLabel.string = "COMPLETE";
-            this.pulseNode.scale = 1;
+    private updateNoteChips(songTimeMs: number): void {
+        const displayIndex = this.displayedGroupIndex(songTimeMs);
+        const groupStatus = this.engine.getGroupStatus(displayIndex);
+        if (!groupStatus || groupStatus.notes.length !== this.noteChipViews.length) {
             return;
         }
+        groupStatus.notes.forEach((status, index) => this.drawNoteChip(this.noteChipViews[index], status, songTimeMs));
+    }
 
-        const leadWindowMs = 1800;
-        const progress = Math.max(0, Math.min(1, (songTimeMs - (sequence.targetTimeMs - leadWindowMs)) / leadWindowMs));
-        this.timeline.strokeColor = cc.color(255, 105, 213);
-        this.timeline.lineWidth = 8;
-        this.timeline.moveTo(x, 0);
-        this.timeline.lineTo(x + width * progress, 0);
-        this.timeline.stroke();
+    private drawNoteChip(view: NoteChipView, status: GroupNoteStatus, songTimeMs: number): void {
+        const grade = status.judgement ? status.judgement.grade : "";
+        const accent = grade ? this.judgementColor(grade) : status.current
+            ? cc.color(104, 226, 255)
+            : cc.color(79, 91, 132);
+        const fill = grade
+            ? this.gradeFillColor(grade)
+            : status.current ? cc.color(65, 48, 124, 245) : cc.color(29, 36, 65, 235);
 
-        const remaining = sequence.targetTimeMs - songTimeMs;
-        this.countdownLabel.string = remaining >= 0
-            ? "BEAT IN " + (remaining / 1000).toFixed(2) + "s"
-            : "LATE +" + (Math.abs(remaining) / 1000).toFixed(2) + "s";
+        view.card.clear();
+        view.card.fillColor = fill;
+        view.card.roundRect(-view.width * 0.5, -view.height * 0.5, view.width, view.height, 13);
+        view.card.fill();
+        view.card.strokeColor = accent;
+        view.card.lineWidth = status.current ? 4 : 2;
+        view.card.roundRect(-view.width * 0.5, -view.height * 0.5, view.width, view.height, 13);
+        view.card.stroke();
 
+        view.arrow.node.color = grade || status.current ? cc.color(248, 251, 255) : cc.color(173, 183, 214);
+        view.status.string = grade ? GRADE_TEXT[grade] : status.current ? "当前 · 待判" : "未到";
+        view.status.node.color = accent;
+
+        const barWidth = Math.max(42, view.width - 24);
+        const x = -barWidth * 0.5;
+        const target = status.note.targetTimeMs;
+        const badWindow = DEFAULT_JUDGE_WINDOWS.badMs;
+        const badStart = noteApproachProgress(target - badWindow, target, NOTE_APPROACH_MS, badWindow);
+        const targetPosition = noteApproachProgress(target, target, NOTE_APPROACH_MS, badWindow);
+        const markerTime = status.judgement ? target + status.judgement.deltaMs : songTimeMs;
+        const markerPosition = noteApproachProgress(markerTime, target, NOTE_APPROACH_MS, badWindow);
+
+        view.miniBar.clear();
+        view.miniBar.lineCap = cc.Graphics.LineCap.ROUND;
+        view.miniBar.strokeColor = cc.color(57, 68, 105);
+        view.miniBar.lineWidth = 5;
+        view.miniBar.moveTo(x, 0);
+        view.miniBar.lineTo(x + barWidth, 0);
+        view.miniBar.stroke();
+        view.miniBar.strokeColor = cc.color(255, 210, 112, 170);
+        view.miniBar.lineWidth = 6;
+        view.miniBar.moveTo(x + barWidth * badStart, 0);
+        view.miniBar.lineTo(x + barWidth, 0);
+        view.miniBar.stroke();
+        view.miniBar.strokeColor = cc.color(245, 248, 255, 190);
+        view.miniBar.lineWidth = 2;
+        view.miniBar.moveTo(x + barWidth * targetPosition, -7);
+        view.miniBar.lineTo(x + barWidth * targetPosition, 7);
+        view.miniBar.stroke();
+        view.miniBar.fillColor = accent;
+        view.miniBar.circle(x + barWidth * markerPosition, 0, status.current || grade ? 5 : 3);
+        view.miniBar.fill();
+    }
+
+    private displayedGroupIndex(songTimeMs: number): number {
+        const snapshot = this.engine.getSnapshot();
+        if (this.heldGroupIndex >= 0) {
+            if (snapshot.finished || songTimeMs < this.holdUntilSongTimeMs) {
+                return this.heldGroupIndex;
+            }
+            this.heldGroupIndex = -1;
+            this.groupRenderKey = "";
+        }
+        return Math.min(snapshot.groupIndex, snapshot.groupCount - 1);
+    }
+
+    private updateGlobalTimeline(songTimeMs: number): void {
+        const snapshot = this.engine.getSnapshot();
+        const currentNote = this.engine.getCurrentNote();
+        const width = this.globalBarWidth;
+        const x = -width * 0.5;
+        const progress = snapshot.finished ? 1 : timelineProgress(songTimeMs, this.songDurationMs);
+        const feedbackColor = snapshot.lastJudgement
+            ? this.judgementColor(snapshot.lastJudgement)
+            : cc.color(104, 226, 255);
+
+        this.globalTimeline.clear();
+        this.globalTimeline.lineCap = cc.Graphics.LineCap.ROUND;
+        this.globalTimeline.strokeColor = cc.color(47, 57, 92);
+        this.globalTimeline.lineWidth = 12;
+        this.globalTimeline.moveTo(x, 0);
+        this.globalTimeline.lineTo(x + width, 0);
+        this.globalTimeline.stroke();
+
+        if (currentNote) {
+            const badWindow = DEFAULT_JUDGE_WINDOWS.badMs;
+            const start = timelineProgress(currentNote.targetTimeMs - badWindow, this.songDurationMs);
+            const end = timelineProgress(currentNote.targetTimeMs + badWindow, this.songDurationMs);
+            const target = timelineProgress(currentNote.targetTimeMs, this.songDurationMs);
+            const actualWindowWidth = Math.max(10, width * (end - start));
+            const windowCenter = x + width * (start + end) * 0.5;
+            this.globalTimeline.strokeColor = cc.color(255, 210, 112, 190);
+            this.globalTimeline.lineWidth = 12;
+            this.globalTimeline.moveTo(windowCenter - actualWindowWidth * 0.5, 0);
+            this.globalTimeline.lineTo(windowCenter + actualWindowWidth * 0.5, 0);
+            this.globalTimeline.stroke();
+            this.globalTimeline.strokeColor = cc.color(245, 248, 255);
+            this.globalTimeline.lineWidth = 3;
+            this.globalTimeline.moveTo(x + width * target, -10);
+            this.globalTimeline.lineTo(x + width * target, 10);
+            this.globalTimeline.stroke();
+        }
+
+        this.globalTimeline.strokeColor = feedbackColor;
+        this.globalTimeline.lineWidth = 7;
+        this.globalTimeline.moveTo(x, 0);
+        this.globalTimeline.lineTo(x + width * progress, 0);
+        this.globalTimeline.stroke();
+        this.globalTimeline.fillColor = feedbackColor;
+        this.globalTimeline.circle(x + width * progress, 0, 7);
+        this.globalTimeline.fill();
+
+        if (snapshot.finished) {
+            this.progressLabel.string = "谱面 100% · COMPLETE / 完成";
+            this.progressLabel.node.color = feedbackColor;
+        } else if (currentNote) {
+            const remainingMs = currentNote.targetTimeMs - songTimeMs;
+            const timingText = remainingMs >= 0
+                ? "目标 " + (remainingMs / 1000).toFixed(2) + "s"
+                : "已晚 " + (Math.abs(remainingMs) / 1000).toFixed(2) + "s";
+            this.progressLabel.string = "谱面 " + Math.round(progress * 100) + "% · 当前 "
+                + ARROW_TEXT[currentNote.direction] + " · " + timingText;
+            this.progressLabel.node.color = cc.color(192, 202, 233);
+        }
+    }
+
+    private updateStage(songTimeMs: number): void {
         const beatDuration = 60000 / DEMO_BEATMAP.bpm;
         const phase = ((songTimeMs % beatDuration) + beatDuration) % beatDuration / beatDuration;
-        const pulse = 1 + Math.pow(1 - phase, 2) * 0.34;
-        this.pulseNode.scale = pulse;
-        this.pulseNode.opacity = Math.round(110 + (1 - phase) * 145);
+        const pulse = Math.pow(1 - phase, 2);
+        this.dancerNode.y = this.stageBaseY + 3 + pulse * 8;
+        this.dancerNode.rotation = Math.sin(songTimeMs / 420) * 3.5;
+        this.dancerNode.scaleX = (this.viewportHeight < 640 ? 0.78 : 1) * (1 + pulse * 0.035);
+        this.dancerNode.scaleY = (this.viewportHeight < 640 ? 0.78 : 1) * (1 - pulse * 0.025);
     }
 
     private drawBackground(): void {
         const width = this.viewportWidth;
         const height = this.viewportHeight;
         this.background.clear();
-        this.background.fillColor = cc.color(8, 12, 31);
+        this.background.fillColor = cc.color(7, 11, 28);
         this.background.rect(-width * 0.5, -height * 0.5, width, height);
         this.background.fill();
 
-        this.background.fillColor = cc.color(46, 27, 91, 90);
-        this.background.circle(width * 0.34, height * 0.22, 240);
+        this.background.fillColor = cc.color(77, 40, 133, 80);
+        this.background.circle(width * 0.36, height * 0.23, 250);
         this.background.fill();
-        this.background.fillColor = cc.color(11, 111, 123, 55);
-        this.background.circle(-width * 0.38, -height * 0.3, 280);
+        this.background.fillColor = cc.color(10, 126, 139, 55);
+        this.background.circle(-width * 0.39, -height * 0.25, 285);
         this.background.fill();
 
-        this.background.strokeColor = cc.color(255, 105, 213, 28);
+        this.background.strokeColor = cc.color(255, 105, 213, 25);
         this.background.lineWidth = 2;
         for (let y = -height * 0.5; y <= height * 0.5; y += 54) {
             this.background.moveTo(-width * 0.5, y);
-            this.background.lineTo(width * 0.5, y + 40);
+            this.background.lineTo(width * 0.5, y + 38);
         }
         this.background.stroke();
     }
 
-    private drawSequencePanel(): void {
-        this.sequencePanel.clear();
-        this.sequencePanel.fillColor = cc.color(18, 24, 52, 238);
-        this.sequencePanel.roundRect(-this.panelWidth * 0.5, -102, this.panelWidth, 204, 24);
-        this.sequencePanel.fill();
-        this.sequencePanel.strokeColor = cc.color(103, 82, 171, 170);
-        this.sequencePanel.lineWidth = 2;
-        this.sequencePanel.roundRect(-this.panelWidth * 0.5, -102, this.panelWidth, 204, 24);
-        this.sequencePanel.stroke();
+    private drawStage(): void {
+        const compact = this.viewportHeight < 640;
+        const width = Math.min(650, this.panelWidth * 0.72);
+        const height = compact ? 78 : 110;
+        this.stage.clear();
+
+        this.stage.fillColor = cc.color(16, 24, 52, 180);
+        this.stage.moveTo(-width * 0.5, -height * 0.25);
+        this.stage.lineTo(-width * 0.34, height * 0.4);
+        this.stage.lineTo(width * 0.34, height * 0.4);
+        this.stage.lineTo(width * 0.5, -height * 0.25);
+        this.stage.close();
+        this.stage.fill();
+        this.stage.strokeColor = cc.color(104, 226, 255, 110);
+        this.stage.lineWidth = 3;
+        this.stage.moveTo(-width * 0.5, -height * 0.25);
+        this.stage.lineTo(width * 0.5, -height * 0.25);
+        this.stage.stroke();
+
+        this.stage.fillColor = cc.color(104, 226, 255, 28);
+        this.stage.moveTo(-width * 0.36, height * 0.42);
+        this.stage.lineTo(-width * 0.08, -height * 0.28);
+        this.stage.lineTo(-width * 0.48, -height * 0.28);
+        this.stage.close();
+        this.stage.fill();
+        this.stage.fillColor = cc.color(255, 105, 213, 28);
+        this.stage.moveTo(width * 0.36, height * 0.42);
+        this.stage.lineTo(width * 0.48, -height * 0.28);
+        this.stage.lineTo(width * 0.08, -height * 0.28);
+        this.stage.close();
+        this.stage.fill();
+    }
+
+    private drawDancer(graphics: cc.Graphics): void {
+        graphics.clear();
+        graphics.fillColor = cc.color(241, 245, 255);
+        graphics.circle(0, 38, 12);
+        graphics.fill();
+        graphics.fillColor = cc.color(104, 226, 255);
+        graphics.roundRect(-15, 3, 30, 31, 9);
+        graphics.fill();
+        graphics.strokeColor = cc.color(255, 105, 213);
+        graphics.lineWidth = 7;
+        graphics.moveTo(-9, 7);
+        graphics.lineTo(-30, -12);
+        graphics.moveTo(9, 7);
+        graphics.lineTo(32, 14);
+        graphics.moveTo(-7, 3);
+        graphics.lineTo(-18, -28);
+        graphics.moveTo(7, 3);
+        graphics.lineTo(22, -24);
+        graphics.stroke();
+    }
+
+    private drawGroupPanel(): void {
+        this.groupPanel.clear();
+        this.groupPanel.fillColor = cc.color(14, 20, 45, 244);
+        this.groupPanel.roundRect(
+            -this.panelWidth * 0.5,
+            -this.panelHeight * 0.5,
+            this.panelWidth,
+            this.panelHeight,
+            22
+        );
+        this.groupPanel.fill();
+        this.groupPanel.strokeColor = cc.color(103, 82, 171, 180);
+        this.groupPanel.lineWidth = 2;
+        this.groupPanel.roundRect(
+            -this.panelWidth * 0.5,
+            -this.panelHeight * 0.5,
+            this.panelWidth,
+            this.panelHeight,
+            22
+        );
+        this.groupPanel.stroke();
     }
 
     private makeLabel(
@@ -483,13 +737,11 @@ export default class GameBootstrap extends cc.Component {
         label.string = text;
         label.fontFamily = "Arial";
         label.fontSize = fontSize;
-        label.lineHeight = Math.round(fontSize * 1.2);
+        label.lineHeight = Math.round(fontSize * 1.18);
         label.horizontalAlign = cc.Label.HorizontalAlign.CENTER;
         label.verticalAlign = cc.Label.VerticalAlign.CENTER;
         label.overflow = cc.Label.Overflow.SHRINK;
-        // Adding cc.Label resets a fresh node's size; apply the intended box
-        // afterwards so SHRINK labels do not collapse to an unreadable width.
-        node.setContentSize(700, Math.max(44, fontSize + 12));
+        node.setContentSize(700, Math.max(42, fontSize + 12));
         return label;
     }
 
@@ -518,7 +770,7 @@ export default class GameBootstrap extends cc.Component {
             graphics.stroke();
         };
         redraw(false);
-        const label = this.makeLabel(node, name + "Label", text, text.length > 2 ? 20 : 38, cc.color(245, 248, 255));
+        const label = this.makeLabel(node, name + "Label", text, text.length > 3 ? 18 : 35, cc.color(245, 248, 255));
         label.node.setContentSize(width - 12, height - 10);
 
         node.on(cc.Node.EventType.TOUCH_START, () => {
@@ -537,22 +789,41 @@ export default class GameBootstrap extends cc.Component {
         return node;
     }
 
-    private setJudgement(text: string, color: cc.Color, expiresAtMs: number): void {
+    private showTransient(text: string, color: cc.Color, expiresAtMs: number): void {
         this.judgementLabel.string = text;
         this.judgementLabel.node.color = color;
         this.messageExpiresAtMs = expiresAtMs;
+    }
+
+    private restoreLastResult(): void {
+        this.judgementLabel.string = this.lastResultText;
+        this.judgementLabel.node.color = this.lastResultColor;
+        this.messageExpiresAtMs = 0;
     }
 
     private judgementColor(grade: string): cc.Color {
         switch (grade) {
             case "Perfect":
                 return cc.color(104, 226, 255);
-            case "Great":
-                return cc.color(255, 105, 213);
             case "Good":
-                return cc.color(255, 210, 112);
+                return cc.color(142, 242, 151);
+            case "Bad":
+                return cc.color(255, 202, 92);
             default:
-                return cc.color(255, 112, 146);
+                return cc.color(255, 104, 136);
+        }
+    }
+
+    private gradeFillColor(grade: JudgeGrade): cc.Color {
+        switch (grade) {
+            case "Perfect":
+                return cc.color(24, 92, 112, 240);
+            case "Good":
+                return cc.color(34, 94, 72, 240);
+            case "Bad":
+                return cc.color(105, 76, 35, 240);
+            default:
+                return cc.color(99, 38, 63, 240);
         }
     }
 
@@ -587,7 +858,7 @@ export default class GameBootstrap extends cc.Component {
             this.pausedByHost = true;
         }
         if (this.platformReady) {
-            this.instructionLabel.string = "PAUSED BY HOST";
+            this.instructionLabel.string = "宿主已暂停 · 返回后继续";
         }
     }
 
@@ -603,8 +874,8 @@ export default class GameBootstrap extends cc.Component {
             this.clock.resume();
             this.pausedByHost = false;
             this.instructionLabel.string = this.engine.getSnapshot().finished
-                ? "SEQUENCE COMPLETE · TAP RESTART OR PRESS R"
-                : "ARROWS / WASD TO ENTER · SPACE / ENTER ON BEAT";
+                ? "COMPLETE / 完成 · 点击重新开始或按 R"
+                : "方向键 / WASD · 在每个箭头的目标时刻直接输入";
         }
         this.layout();
     }

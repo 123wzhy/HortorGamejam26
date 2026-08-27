@@ -7,14 +7,12 @@ export type ActionHandler = () => void;
 /** Normalizes keyboard and programmatic touch-button input into game actions. */
 export class InputRouter {
     private readonly onDirection: DirectionHandler;
-    private readonly onBeat: ActionHandler;
     private readonly onRestart: ActionHandler;
     private readonly pressed: PressedKeyState = new PressedKeyState();
     private attached: boolean = false;
 
-    public constructor(onDirection: DirectionHandler, onBeat: ActionHandler, onRestart: ActionHandler) {
+    public constructor(onDirection: DirectionHandler, onRestart: ActionHandler) {
         this.onDirection = onDirection;
-        this.onBeat = onBeat;
         this.onRestart = onRestart;
     }
 
@@ -44,10 +42,6 @@ export class InputRouter {
         this.onDirection(direction);
     }
 
-    public routeBeat(): void {
-        this.onBeat();
-    }
-
     public routeRestart(): void {
         this.onRestart();
     }
@@ -73,10 +67,6 @@ export class InputRouter {
             case cc.macro.KEY.right:
             case cc.macro.KEY.d:
                 this.routeDirection("right");
-                break;
-            case cc.macro.KEY.space:
-            case cc.macro.KEY.enter:
-                this.routeBeat();
                 break;
             case cc.macro.KEY.r:
                 this.routeRestart();

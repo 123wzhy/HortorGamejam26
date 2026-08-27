@@ -1,6 +1,6 @@
 # HortorGamejam26 横屏节奏框架
 
-这是一个可直接用 **Cocos Creator 2.4.9** 打开、构建和游玩的横屏手机音游 MVP。玩法采用舞蹈节奏游戏常见的“两阶段输入”：先按顺序完成方向序列，再在目标节拍按下确认键，根据时差得到 `Perfect / Great / Good / Miss`。
+这是一个可直接用 **Cocos Creator 2.4.9** 打开、构建和游玩的横屏手机音游 MVP。谱面按组合展示，但组合内每个方向键都有独立目标时刻：玩家在箭头自己的判定时间直接输入，逐键得到 `Perfect / Good / Bad / Miss`，不再需要额外的 BEAT 确认。
 
 当前版本不依赖 npm 第三方包、外部 CDN、图片或音频资源。界面由 `cc.Graphics`、`cc.Label` 和系统字体在运行时生成，因此仓库本身即可完成真实 Cocos Web 构建，而不是演示占位工程。
 
@@ -38,17 +38,20 @@ COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 | 动作 | 键盘 | 触控 |
 |---|---|---|
 | 输入方向 | 方向键或 `W/A/S/D` | 底部四个方向按钮 |
-| 确认节拍 | `Space` 或 `Enter` | 右下 `BEAT` |
-| 重新开始 | `R` | 右上 `RESTART` |
+| 重新开始 | `R` | 右上“重新开始” |
 
-方向输错会清空当前短句，允许立即重新输入；序列完成后，过早确认只提示等待而不消耗机会。在 `Good` 窗口内以未完成序列确认，或超过窗口仍未确认，都会记为 `Miss`。Demo 谱面包含 8 个确定性短句，完整一轮约 15 秒。
+引擎始终只处理时间最早的未结算 note。输入早于当前 note 的最早可判定时刻时，只显示“请等待”，不会消耗 note；进入 `Bad` 窗口后按错方向会让当前 note 立即失败；超过最晚边界仍未输入则自动失败。分数和 Combo 都逐 note 结算，失败断连击，组合结束后自动展示下一组。完成组合会保留约 `420ms`，让最后一键及整组状态清晰可见。
 
-默认判定窗口（含边界）为：
+Demo 谱面包含 8 个确定性组合、每组 3–5 个方向，共 31 个 note。BPM 为 100，每拍 `600ms`，所有目标时间严格落在拍点网格，完整一轮约 25 秒。四种结果与单键基础分为：
 
-- Perfect：`±45ms`
-- Great：`±90ms`
-- Good：`±150ms`
-- Miss：超出 Good 窗口，或窗口内确认时序列不完整
+- 完美（Perfect）：`±50ms`，`1000` 分
+- 好（Good）：`±100ms`，`700` 分
+- 差（Bad）：`±180ms`，`350` 分
+- 失败（Miss）：超过 `±180ms`、或在窗口内按错方向，`0` 分
+
+所有窗口边界均包含在对应档位内：恰好 `±50ms` 是 Perfect，恰好 `±100ms` 是 Good，恰好 `±180ms` 是 Bad；只有晚于 `+180ms` 才自动 Miss。
+
+界面中当前组合的每个箭头 chip 都有独立 mini 判定条、移动 marker 和持久结果色；下部另有一条全局谱面判定条，显示整首进度、当前 note 的目标点、判定窗口和歌曲 marker。全局条位于组合面板与四个触控键之间，按底部安全区上移，不与触控区域重叠。
 
 ## 架构
 
@@ -56,17 +59,18 @@ COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 assets/scripts/
   domain/Beatmap.ts             谱面、方向类型与 8 段 demo 数据
   timing/SongClock.ts           单调时钟、暂停/恢复、校准偏移
-  gameplay/JudgeSystem.ts       可配置判定窗口
-  gameplay/SequenceEngine.ts    序列、超时、分数、Combo、重开
+  gameplay/JudgeSystem.ts       四档逐 note 判定窗口与固定分值
+  gameplay/SequenceEngine.ts    最早 note、超时、组推进、分数、Combo、重开
+  gameplay/TimingProgress.ts    全局/mini 判定条共享的纯进度映射
   input/InputRouter.ts          键盘和触控动作归一化
   input/PressedKeyState.ts      按键去重与失焦复位状态
   platform/BuildaAdapter.ts     ready、安全区、胶囊、宿主音频契约
-  ui/GameBootstrap.ts           程序化 UI、视觉节拍、生命周期
+  ui/GameBootstrap.ts           原创程序化舞台、逐键状态 UI、安全区与生命周期
 ```
 
 `SongClock` 每次判定都从 `performance.now()`（不可用时才回退 `Date.now()`）推导歌曲时间，不用每帧 `dt` 累加。Creator 生命周期事件、`visibilitychange` 和 `pagehide/pageshow` 共同保证切后台冻结歌曲时钟，回前台从原位置继续；窗口失焦时还会清空按键去重状态。`setCalibrationOffsetMs()` 提供统一校准偏移入口；正式校准流程、设备档案和存档尚待曲目接入时确定。
 
-`SequenceEngine` 和 `JudgeSystem` 不引用 `cc`，测试直接编译同一份 TypeScript 实现，避免维护一套与游戏实现漂移的 JS 镜像。测试覆盖判定边界、视觉节拍与谱面拍点对齐、错误方向、早按/不完整确认、最终命中/Miss/超时结束语义、失焦按键复位、重开、时钟校准/暂停和 Builda 音频 Result 映射。
+`SequenceEngine`、`JudgeSystem` 和 `TimingProgress` 不引用 `cc`，测试直接编译同一份 TypeScript 实现，避免维护一套与游戏实现漂移的 JS 镜像。测试覆盖四档判定的全部边界、100 BPM 拍点对齐、过早不消耗、窗口内错键、自动超时、逐 note 分数与连击、组合推进和结果持久化、末 note 失败后正常完成、一次输入先补超时再处理新 current note、全局/mini marker 边界、失焦按键复位、重开、时钟校准/暂停和 Builda 音频 Result 映射。
 
 ## BuildaGame 接入
 
@@ -90,7 +94,7 @@ assets/scripts/
 
 使用命令输出的 `dev-url` 打开测试外壳。可切换横屏、刘海安全区并观察右上平台胶囊覆盖。游戏启动时先调用 `Builda.runtime.ready()`，完成后才启动谱面时钟；普通浏览器没有 Builda host 时会安全降级。
 
-`BuildaAdapter.viewportMetrics()` 每次按 CSS 视口与 Cocos 可见设计尺寸的比例换算 `safeArea()` 和 `capsuleMenuRect()`：分数、触控区避开安全区；重开按钮按 `safe.right` 与胶囊右侧占用宽度中的较大值避让。背景仍铺满全屏。
+`BuildaAdapter.viewportMetrics()` 每次按 CSS 视口与 Cocos 可见设计尺寸的比例换算 `safeArea()` 和 `capsuleMenuRect()`：顶部 HUD、下部判定条和触控区避开安全区；右侧连击与重开按钮按 `safe.right` 与胶囊右侧占用宽度中的较大值避让。背景仍铺满全屏。
 
 `BuildaAdapter` 已预留 `playBGM / stopBGM / playSFX` 契约，只有 SDK Result 的 `ok` 为 `true` 时才报告调用成功。正式音频应通过 `Builda.audio.*` 和平台资源包接入。当前只使用视觉节拍，不伪造音乐资源；游戏内也没有音乐/音效开关，静音由 Builda 平台通用设置统一管理。
 
