@@ -295,7 +295,7 @@ export default class GameBootstrap extends cc.Component {
         this.drawStage();
         this.drawGroupPanel();
 
-        const topY = halfHeight - safeTop - 25;
+        const topY = halfHeight - vertical.safeTopApplied - 25;
         const leftX = -halfWidth + this.metrics.safe.left + 22;
         const leftBoxWidth = Math.min(350, Math.max(230, contentWidth * 0.31));
         this.levelLabel.node.setContentSize(leftBoxWidth, 30);
@@ -304,7 +304,8 @@ export default class GameBootstrap extends cc.Component {
         this.trackLabel.node.setContentSize(leftBoxWidth, 24);
         this.trackLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
         this.trackLabel.node.setPosition(leftX + leftBoxWidth * 0.5, topY - 29);
-        this.hostLabel.string = this.metrics.hosted ? "BUILDA RUNTIME" : "浏览器兼容模式";
+        this.hostLabel.string = (this.metrics.hosted ? "BUILDA RUNTIME" : "浏览器兼容模式")
+            + (vertical.safeInsetsClamped ? " · 安全区受限" : "");
         this.hostLabel.node.setContentSize(leftBoxWidth, 20);
         this.hostLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
         this.hostLabel.node.setPosition(leftX + leftBoxWidth * 0.5, topY - 52);
@@ -345,8 +346,10 @@ export default class GameBootstrap extends cc.Component {
         this.directionPad.scale = padScale;
 
         this.globalTimeline.node.setPosition(contentCenterX, vertical.globalLineY);
+        this.globalTimeline.node.active = vertical.showTimelineBar;
         this.progressLabel.node.setContentSize(this.globalBarWidth, 24);
         this.progressLabel.node.setPosition(contentCenterX, vertical.progressLabelY);
+        this.progressLabel.node.active = vertical.showProgressLabel;
         this.instructionLabel.node.setContentSize(this.globalBarWidth, 22);
         this.instructionLabel.node.setPosition(contentCenterX, vertical.instructionLabelY);
         this.instructionLabel.node.active = vertical.showInstruction;

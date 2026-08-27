@@ -243,6 +243,7 @@ function testTimelineAndSafeAreaMath(): void {
 }
 
 function assertVerticalStack(layout: RhythmVerticalLayout, message: string): void {
+    equal(layout.showTimelineBar, true, message + ": global timing bar remains visible");
     equal(
         layout.globalBlockBottom >= layout.buttonTop + 8,
         true,
@@ -252,6 +253,11 @@ function assertVerticalStack(layout: RhythmVerticalLayout, message: string): voi
         layout.panelBottom >= layout.globalBlockTop + 12,
         true,
         message + ": group panel stays above the global judge block"
+    );
+    equal(
+        layout.panelTop <= layout.hudBottom - 12 + 0.001,
+        true,
+        message + ": group panel stays below the HUD boundary"
     );
     if (layout.showStage) {
         const stageLowerExtent = layout.compact ? 22 : 28;
@@ -270,6 +276,7 @@ function testSafeBottomVerticalLayout(): void {
         safeBottom: 0,
         directionPadScale: 1
     });
+    equal(normal.showProgressLabel, true, "Normal landscape keeps the progress label");
     equal(normal.showInstruction, true, "Normal landscape keeps the secondary instruction");
     equal(normal.showStage, true, "Normal landscape keeps the decorative stage");
     near(normal.panelY, -64, 0.001, "Normal landscape preserves the preferred panel position");
@@ -311,6 +318,7 @@ function testSafeBottomVerticalLayout(): void {
     });
     equal(largeBottomInset.showInstruction, false, "Large bottom inset hides secondary instructions first");
     equal(largeBottomInset.showStage, false, "Large opposing insets hide the non-critical stage");
+    equal(largeBottomInset.showProgressLabel, true, "170-unit inset still keeps progress text");
     equal(largeBottomInset.panelHeight >= 118, true, "Large inset retains a usable note panel");
     near(
         largeBottomInset.buttonTop - largeBottomInset.buttonBottom,
@@ -319,6 +327,43 @@ function testSafeBottomVerticalLayout(): void {
         "Vertical pressure never shrinks the direction buttons"
     );
     assertVerticalStack(largeBottomInset, "large bottom inset");
+
+    const extremeBottomInset = calculateRhythmVerticalLayout({
+        viewportHeight: 720,
+        safeTop: 81.2,
+        safeBottom: 250,
+        directionPadScale: 1
+    });
+    equal(extremeBottomInset.showInstruction, false, "Extreme inset keeps secondary instructions hidden");
+    equal(extremeBottomInset.showStage, false, "Extreme inset keeps the non-critical stage hidden");
+    equal(extremeBottomInset.showProgressLabel, false, "Extreme inset hides only the progress text next");
+    equal(extremeBottomInset.showTimelineBar, true, "Extreme inset preserves the timing line and marker");
+    equal(extremeBottomInset.safeInsetsClamped, false, "250-unit bottom inset still fits the full core stack");
+    equal(extremeBottomInset.panelHeight >= 118, true, "Extreme inset retains the minimum note panel");
+    near(
+        extremeBottomInset.buttonTop - extremeBottomInset.buttonBottom,
+        84,
+        0.001,
+        "Extreme inset retains full-height touch controls"
+    );
+    assertVerticalStack(extremeBottomInset, "extreme 250-unit bottom inset");
+
+    const impossibleBottomInset = calculateRhythmVerticalLayout({
+        viewportHeight: 720,
+        safeTop: 81.2,
+        safeBottom: 400,
+        directionPadScale: 1
+    });
+    equal(impossibleBottomInset.safeInsetsClamped, true, "Physically impossible inset is explicitly clamped");
+    near(
+        impossibleBottomInset.safeBottomApplied,
+        250.8,
+        0.001,
+        "Clamped layout exposes the last supported bottom inset"
+    );
+    equal(impossibleBottomInset.showProgressLabel, false, "Clamped core layout omits progress text");
+    equal(impossibleBottomInset.panelHeight >= 118, true, "Clamped core layout retains the minimum panel");
+    assertVerticalStack(impossibleBottomInset, "physically impossible bottom inset");
 
     const narrowLandscape = calculateRhythmVerticalLayout({
         viewportHeight: 540,

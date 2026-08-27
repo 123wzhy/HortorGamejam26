@@ -13,6 +13,8 @@ export interface RhythmVerticalLayout {
     globalLineY: number;
     progressLabelY: number;
     instructionLabelY: number;
+    showTimelineBar: boolean;
+    showProgressLabel: boolean;
     showInstruction: boolean;
     globalBlockTop: number;
     globalBlockBottom: number;
@@ -23,6 +25,10 @@ export interface RhythmVerticalLayout {
     showStage: boolean;
     stageBaseY: number;
     dancerScale: number;
+    safeTopApplied: number;
+    safeBottomApplied: number;
+    safeInsetsClamped: boolean;
+    hudBottom: number;
 }
 
 export interface NoteChipVerticalLayout {
@@ -46,51 +52,69 @@ function clamp(value: number, minimum: number, maximum: number): number {
 
 /**
  * Allocates the lower screen from the safe-area edge upwards in one stack:
- * direction buttons -> global judge block -> current-group panel. Secondary
- * instruction text is removed before the note panel becomes too short.
+ * direction buttons -> global judge block -> current-group panel. It removes
+ * instruction, stage and finally progress text before clamping impossible
+ * insets; the timing bar and core interaction layers always remain allocated.
  */
 export function calculateRhythmVerticalLayout(input: RhythmVerticalLayoutInput): RhythmVerticalLayout {
     const viewportHeight = Math.max(320, finiteOr(input.viewportHeight, 720));
-    const safeTop = Math.max(0, finiteOr(input.safeTop, 0));
-    const safeBottom = Math.max(0, finiteOr(input.safeBottom, 0));
+    const requestedSafeTop = Math.max(0, finiteOr(input.safeTop, 0));
+    const requestedSafeBottom = Math.max(0, finiteOr(input.safeBottom, 0));
     const directionPadScale = clamp(finiteOr(input.directionPadScale, 1), 0.82, 1);
     const compact = viewportHeight < 640;
     const halfHeight = viewportHeight * 0.5;
+    const minimumPanelHeight = 118;
+    const controlBottomMargin = 14;
+    const timelineCenterAboveButtons = 18;
+    const timelineHalfHeight = 10;
+    const layerGap = 12;
+    const judgementCenterOffset = compact ? 67 : 76;
+    const judgementHalfHeight = 19;
 
     const buttonHeight = 84 * directionPadScale;
-    const buttonBottom = -halfHeight + safeBottom + 14;
+    const hudPanelOffset = 25 + judgementCenterOffset + judgementHalfHeight + layerGap;
+    const coreStackWithoutInsets = controlBottomMargin + buttonHeight
+        + timelineCenterAboveButtons + timelineHalfHeight + layerGap + minimumPanelHeight;
+    const totalInsetBudget = Math.max(0, viewportHeight - hudPanelOffset - coreStackWithoutInsets);
+    const safeTopApplied = Math.min(requestedSafeTop, totalInsetBudget);
+    const safeBottomBudget = Math.max(0, totalInsetBudget - safeTopApplied);
+    const safeBottomApplied = Math.min(requestedSafeBottom, safeBottomBudget);
+    const safeInsetsClamped = requestedSafeTop - safeTopApplied > 0.001
+        || requestedSafeBottom - safeBottomApplied > 0.001;
+
+    const buttonBottom = -halfHeight + safeBottomApplied + controlBottomMargin;
     const buttonTop = buttonBottom + buttonHeight;
     const controlsY = buttonBottom + buttonHeight * 0.5;
 
     const preferredPanelHeight = compact ? 142 : 174;
     const preferredPanelY = compact ? -30 : -64;
     const preferredPanelBottom = preferredPanelY - preferredPanelHeight * 0.5;
-    const minimumPanelHeight = 118;
 
-    const topY = halfHeight - safeTop - 25;
-    const judgementBottom = topY - (compact ? 67 : 76) - 19;
+    const topY = halfHeight - safeTopApplied - 25;
+    const judgementBottom = topY - judgementCenterOffset - judgementHalfHeight;
     const maximumPanelTopWithStage = Math.min(
         compact ? 60 : 104,
         judgementBottom - (compact ? 42 : 55)
     );
-    const maximumPanelTopWithoutStage = judgementBottom - 12;
+    const maximumPanelTopWithoutStage = judgementBottom - layerGap;
 
+    let showProgressLabel = true;
     let showInstruction = true;
     let globalLineY = buttonTop + 36;
     let progressLabelY = globalLineY + 22;
     let instructionLabelY = globalLineY - 17;
     let globalBlockTop = progressLabelY + 12;
     let globalBlockBottom = instructionLabelY - 11;
-    let panelBottom = Math.max(preferredPanelBottom, globalBlockTop + 12);
+    let panelBottom = Math.max(preferredPanelBottom, globalBlockTop + layerGap);
 
     if (maximumPanelTopWithStage - panelBottom < minimumPanelHeight) {
         showInstruction = false;
-        globalLineY = buttonTop + 18;
+        globalLineY = buttonTop + timelineCenterAboveButtons;
         progressLabelY = globalLineY + 22;
         instructionLabelY = globalLineY - 17;
         globalBlockTop = progressLabelY + 12;
-        globalBlockBottom = globalLineY - 10;
-        panelBottom = Math.max(preferredPanelBottom, globalBlockTop + 12);
+        globalBlockBottom = globalLineY - timelineHalfHeight;
+        panelBottom = Math.max(preferredPanelBottom, globalBlockTop + layerGap);
     }
 
     let availablePanelHeight = maximumPanelTopWithStage - panelBottom;
@@ -109,6 +133,13 @@ export function calculateRhythmVerticalLayout(input: RhythmVerticalLayoutInput):
 
     if (!showStage) {
         availablePanelHeight = maximumPanelTopWithoutStage - panelBottom;
+        if (availablePanelHeight < minimumPanelHeight) {
+            showProgressLabel = false;
+            globalBlockTop = globalLineY + timelineHalfHeight;
+            globalBlockBottom = globalLineY - timelineHalfHeight;
+            panelBottom = Math.max(preferredPanelBottom, globalBlockTop + layerGap);
+            availablePanelHeight = maximumPanelTopWithoutStage - panelBottom;
+        }
         panelHeight = Math.min(preferredPanelHeight, Math.max(minimumPanelHeight, availablePanelHeight));
         panelTop = panelBottom + panelHeight;
         panelY = panelBottom + panelHeight * 0.5;
@@ -124,6 +155,8 @@ export function calculateRhythmVerticalLayout(input: RhythmVerticalLayoutInput):
         globalLineY,
         progressLabelY,
         instructionLabelY,
+        showTimelineBar: true,
+        showProgressLabel,
         showInstruction,
         globalBlockTop,
         globalBlockBottom,
@@ -133,7 +166,11 @@ export function calculateRhythmVerticalLayout(input: RhythmVerticalLayoutInput):
         panelBottom,
         showStage,
         stageBaseY,
-        dancerScale
+        dancerScale,
+        safeTopApplied,
+        safeBottomApplied,
+        safeInsetsClamped,
+        hudBottom: judgementBottom
     };
 }
 
