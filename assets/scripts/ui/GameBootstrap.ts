@@ -2,7 +2,7 @@ import { DEMO_BEATMAP, Direction } from "../domain/Beatmap";
 import { EngineAction, SequenceEngine } from "../gameplay/SequenceEngine";
 import { JudgeSystem } from "../gameplay/JudgeSystem";
 import { InputRouter } from "../input/InputRouter";
-import { BuildaAdapter, BuildaViewportMetrics } from "../platform/BuildaAdapter";
+import { BuildaAdapter, BuildaViewportMetrics, calculateRightAvoidance } from "../platform/BuildaAdapter";
 import { SongClock } from "../timing/SongClock";
 
 const { ccclass } = cc._decorator;
@@ -50,9 +50,14 @@ export default class GameBootstrap extends cc.Component {
     };
     private platformReady: boolean = false;
     private pausedByHost: boolean = false;
+    private hostSuspended: boolean = false;
     private sequenceRenderKey: string = "";
     private messageExpiresAtMs: number = 0;
     private resizeHandler: (() => void) | null = null;
+    private visibilityHandler: (() => void) | null = null;
+    private pageHideHandler: (() => void) | null = null;
+    private pageShowHandler: (() => void) | null = null;
+    private blurHandler: (() => void) | null = null;
 
     protected onLoad(): void {
         cc.game.setFrameRate(60);
@@ -69,10 +74,23 @@ export default class GameBootstrap extends cc.Component {
 
         if (typeof window !== "undefined") {
             this.resizeHandler = this.onWindowResize.bind(this);
+            this.pageHideHandler = this.pauseForHost.bind(this);
+            this.pageShowHandler = this.resumeFromHostIfVisible.bind(this);
+            this.blurHandler = this.onWindowBlur.bind(this);
             window.addEventListener("resize", this.resizeHandler);
+            window.addEventListener("pagehide", this.pageHideHandler);
+            window.addEventListener("pageshow", this.pageShowHandler);
+            window.addEventListener("blur", this.blurHandler);
+        }
+        if (typeof document !== "undefined") {
+            this.visibilityHandler = this.onVisibilityChange.bind(this);
+            document.addEventListener("visibilitychange", this.visibilityHandler);
         }
         this.layout();
         this.setJudgement("CONNECTING", cc.color(159, 176, 255), Number.POSITIVE_INFINITY);
+        if (this.isDocumentHidden()) {
+            this.pauseForHost();
+        }
 
         this.adapter.ready().then(() => {
             if (!cc.isValid(this.node)) {
@@ -90,8 +108,22 @@ export default class GameBootstrap extends cc.Component {
         }
         cc.game.off(cc.game.EVENT_HIDE, this.onGameHide, this);
         cc.game.off(cc.game.EVENT_SHOW, this.onGameShow, this);
-        if (typeof window !== "undefined" && this.resizeHandler) {
-            window.removeEventListener("resize", this.resizeHandler);
+        if (typeof window !== "undefined") {
+            if (this.resizeHandler) {
+                window.removeEventListener("resize", this.resizeHandler);
+            }
+            if (this.pageHideHandler) {
+                window.removeEventListener("pagehide", this.pageHideHandler);
+            }
+            if (this.pageShowHandler) {
+                window.removeEventListener("pageshow", this.pageShowHandler);
+            }
+            if (this.blurHandler) {
+                window.removeEventListener("blur", this.blurHandler);
+            }
+        }
+        if (typeof document !== "undefined" && this.visibilityHandler) {
+            document.removeEventListener("visibilitychange", this.visibilityHandler);
         }
     }
 
@@ -231,9 +263,11 @@ export default class GameBootstrap extends cc.Component {
         this.directionPad.setPosition(-halfWidth + this.metrics.safe.left + 230, controlsY);
         this.beatButton.setPosition(halfWidth - this.metrics.safe.right - 126, controlsY);
 
-        const capsuleBlock = this.metrics.capsule.width > 0
-            ? this.metrics.capsule.right + this.metrics.capsule.width + 18
-            : this.metrics.safe.right + 18;
+        const capsuleBlock = calculateRightAvoidance(
+            this.metrics.safe.right,
+            this.metrics.capsule.right,
+            this.metrics.capsule.width
+        );
         this.restartButton.setPosition(
             halfWidth - capsuleBlock - 66,
             halfHeight - Math.max(safeTop, this.metrics.capsule.top) - 34
@@ -257,6 +291,9 @@ export default class GameBootstrap extends cc.Component {
         this.refreshStats();
         this.renderSequenceIfNeeded();
         this.updateTimeline(0);
+        if (this.hostSuspended) {
+            this.pauseForHost();
+        }
     }
 
     private onDirection(direction: Direction): void {
@@ -287,16 +324,16 @@ export default class GameBootstrap extends cc.Component {
         } else if (action.kind === "tooEarly") {
             this.setJudgement("WAIT FOR BEAT", cc.color(255, 210, 112), songTimeMs + 360);
         } else if (action.judgement) {
-            const suffix = action.kind === "finished" ? " · CLEAR" : "";
+            const suffix = action.finished ? " · COMPLETE" : "";
             this.setJudgement(
                 action.judgement.grade.toUpperCase() + suffix,
                 this.judgementColor(action.judgement.grade),
-                action.kind === "finished" ? Number.POSITIVE_INFINITY : songTimeMs + 720
+                action.finished ? Number.POSITIVE_INFINITY : songTimeMs + 720
             );
         }
 
         if (this.engine.getSnapshot().finished) {
-            this.instructionLabel.string = "SONG CLEAR · TAP RESTART OR PRESS R";
+            this.instructionLabel.string = "SEQUENCE COMPLETE · TAP RESTART OR PRESS R";
         }
     }
 
@@ -525,22 +562,61 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private onGameHide(): void {
+        this.pauseForHost();
+    }
+
+    private onGameShow(): void {
+        this.resumeFromHostIfVisible();
+    }
+
+    private onVisibilityChange(): void {
+        if (this.isDocumentHidden()) {
+            this.pauseForHost();
+        } else {
+            this.resumeFromHostIfVisible();
+        }
+    }
+
+    private pauseForHost(): void {
+        this.hostSuspended = true;
+        if (this.input) {
+            this.input.resetPressed();
+        }
         if (this.clock.isStarted() && !this.clock.isPaused()) {
             this.clock.pause();
             this.pausedByHost = true;
+        }
+        if (this.platformReady) {
             this.instructionLabel.string = "PAUSED BY HOST";
         }
     }
 
-    private onGameShow(): void {
+    private resumeFromHostIfVisible(): void {
+        if (this.isDocumentHidden()) {
+            return;
+        }
+        this.hostSuspended = false;
+        if (this.input) {
+            this.input.resetPressed();
+        }
         if (this.pausedByHost) {
             this.clock.resume();
             this.pausedByHost = false;
             this.instructionLabel.string = this.engine.getSnapshot().finished
-                ? "SONG CLEAR · TAP RESTART OR PRESS R"
+                ? "SEQUENCE COMPLETE · TAP RESTART OR PRESS R"
                 : "ARROWS / WASD TO ENTER · SPACE / ENTER ON BEAT";
         }
         this.layout();
+    }
+
+    private onWindowBlur(): void {
+        if (this.input) {
+            this.input.resetPressed();
+        }
+    }
+
+    private isDocumentHidden(): boolean {
+        return typeof document !== "undefined" && !!document.hidden;
     }
 
     private onWindowResize(): void {

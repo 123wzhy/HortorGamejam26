@@ -1,7 +1,8 @@
 import { Beatmap, DEMO_BEATMAP } from "../assets/scripts/domain/Beatmap";
 import { JudgeSystem } from "../assets/scripts/gameplay/JudgeSystem";
 import { SequenceEngine } from "../assets/scripts/gameplay/SequenceEngine";
-import { BuildaAdapter } from "../assets/scripts/platform/BuildaAdapter";
+import { PressedKeyState } from "../assets/scripts/input/PressedKeyState";
+import { BuildaAdapter, calculateRightAvoidance } from "../assets/scripts/platform/BuildaAdapter";
 import { SongClock } from "../assets/scripts/timing/SongClock";
 
 declare const global: any;
@@ -45,6 +46,15 @@ function makeBeatmap(): Beatmap {
     };
 }
 
+function makeSingleBeatmap(): Beatmap {
+    return {
+        id: "single",
+        title: "Single",
+        bpm: 120,
+        sequences: [{ id: "final", directions: ["left"], targetTimeMs: 1000 }]
+    };
+}
+
 function testWrongDirectionAndSuccessfulSequence(): void {
     const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
     engine.start();
@@ -54,6 +64,8 @@ function testWrongDirectionAndSuccessfulSequence(): void {
     engine.inputDirection("left", 300);
     equal(engine.inputDirection("up", 400).kind, "ready", "Complete phrase becomes ready");
     const result = engine.confirm(1000);
+    equal(result.kind, "judged", "A non-final hit keeps its judgement action kind");
+    equal(result.finished, false, "A non-final hit does not finish the beatmap");
     equal(result.judgement && result.judgement.grade, "Perfect", "On-time complete phrase is Perfect");
     equal(engine.getSnapshot().score, 1000, "Perfect awards base score");
     equal(engine.getSnapshot().combo, 1, "Hit increments combo");
@@ -70,8 +82,58 @@ function testEarlyIncompleteAndExpiry(): void {
     equal(engine.update(2150).length, 0, "Expiry boundary remains hittable");
     const expired = engine.update(2150.001);
     equal(expired.length, 1, "Past expiry produces one Miss");
+    equal(expired[0].kind, "missed", "Final timeout keeps its Miss action kind");
+    equal(expired[0].finished, true, "Final timeout separately reports beatmap completion");
     equal(expired[0].reason, "expired", "Timeout reports expired reason");
     equal(engine.getSnapshot().finished, true, "Last expired phrase completes beatmap");
+}
+
+function testFinalOutcomeSemantics(): void {
+    const hitEngine = new SequenceEngine(makeSingleBeatmap(), new JudgeSystem());
+    hitEngine.start();
+    hitEngine.inputDirection("left", 500);
+    const finalHit = hitEngine.confirm(1000);
+    equal(finalHit.kind, "judged", "Final hit remains a judged action");
+    equal(finalHit.finished, true, "Final hit independently reports completion");
+    equal(finalHit.judgement && finalHit.judgement.grade, "Perfect", "Final hit preserves its grade");
+
+    const missEngine = new SequenceEngine(makeSingleBeatmap(), new JudgeSystem());
+    missEngine.start();
+    const finalMiss = missEngine.confirm(1000);
+    equal(finalMiss.kind, "missed", "Final incomplete confirmation remains a Miss action");
+    equal(finalMiss.finished, true, "Final incomplete confirmation reports completion");
+    equal(finalMiss.judgement && finalMiss.judgement.grade, "Miss", "Final Miss preserves its grade");
+
+    const timeoutEngine = new SequenceEngine(makeSingleBeatmap(), new JudgeSystem());
+    timeoutEngine.start();
+    const finalTimeout = timeoutEngine.update(1150.001)[0];
+    equal(finalTimeout.kind, "missed", "Final timeout remains a Miss action");
+    equal(finalTimeout.finished, true, "Final timeout reports completion");
+    equal(finalTimeout.reason, "expired", "Final timeout preserves its reason");
+}
+
+function testPressedKeyResetAfterFocusLoss(): void {
+    const pressed = new PressedKeyState();
+    equal(pressed.press(37), true, "First keydown is accepted");
+    equal(pressed.press(37), false, "Repeated keydown is suppressed while held");
+    pressed.reset();
+    equal(pressed.press(37), true, "Reset allows the first keydown after focus returns");
+    pressed.release(37);
+    equal(pressed.press(37), true, "Normal keyup also releases the key");
+}
+
+function testRightSafeAreaAndCapsuleAvoidance(): void {
+    equal(
+        calculateRightAvoidance(260, 10, 80),
+        278,
+        "A larger right safe area wins over the capsule block"
+    );
+    equal(
+        calculateRightAvoidance(20, 10, 80),
+        108,
+        "A larger capsule block wins over the right safe area"
+    );
+    equal(calculateRightAvoidance(20, 10, 0), 38, "A missing capsule falls back to the safe area");
 }
 
 function testRestart(): void {
@@ -110,6 +172,7 @@ function testSongClockCalibrationAndPause(): void {
 async function testBuildaAudioResultMapping(): Promise<void> {
     const hadWindow = Object.prototype.hasOwnProperty.call(global, "window");
     const previousWindow = global.window;
+    let capturedSfxOptions: any = null;
     try {
         global.window = {
             Builda: {
@@ -118,13 +181,29 @@ async function testBuildaAudioResultMapping(): Promise<void> {
                         ok: false,
                         error: { code: "AUDIO_FAILED", message: "fixture failure" }
                     }),
-                    stopBGM: () => Promise.resolve({ ok: true, data: { available: true } })
+                    stopBGM: () => Promise.resolve({ ok: true, data: { available: true } }),
+                    playSFX: (_path: string, options: any) => {
+                        capturedSfxOptions = options;
+                        return Promise.resolve({ ok: true, data: { available: true } });
+                    }
                 }
             }
         };
         const hostedAdapter = new BuildaAdapter();
         equal(await hostedAdapter.playBGM("audio/bgm/demo.ogg"), false, "Rejected SDK Result maps to false");
         equal(await hostedAdapter.stopBGM(), true, "Successful SDK Result maps to true");
+        equal(
+            await hostedAdapter.playSFX("audio/sfx/hit.ogg", "combo-hit", 0.5),
+            true,
+            "Successful SFX Result maps to true"
+        );
+        equal(capturedSfxOptions.sessionId, "combo-hit", "SFX session id uses the SDK contract key");
+        equal(capturedSfxOptions.volume, 0.5, "SFX volume is forwarded");
+        equal(
+            Object.prototype.hasOwnProperty.call(capturedSfxOptions, "key"),
+            false,
+            "Legacy key option is not sent to the SDK"
+        );
 
         delete global.window;
         equal(await new BuildaAdapter().playSFX("audio/sfx/hit.ogg"), false, "Missing host maps to false");
@@ -142,10 +221,13 @@ async function run(): Promise<void> {
     testDemoTargetsAlignWithVisualBeat();
     testWrongDirectionAndSuccessfulSequence();
     testEarlyIncompleteAndExpiry();
+    testFinalOutcomeSemantics();
+    testPressedKeyResetAfterFocusLoss();
+    testRightSafeAreaAndCapsuleAvoidance();
     testRestart();
     testSongClockCalibrationAndPause();
     await testBuildaAudioResultMapping();
-    console.log("logic-tests=passed cases=7");
+    console.log("logic-tests=passed cases=10");
 }
 
 run().catch((error) => {

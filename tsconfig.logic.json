@@ -13,6 +13,7 @@
     "assets/scripts/timing/SongClock.ts",
     "assets/scripts/gameplay/JudgeSystem.ts",
     "assets/scripts/gameplay/SequenceEngine.ts",
+    "assets/scripts/input/PressedKeyState.ts",
     "assets/scripts/platform/BuildaAdapter.ts",
     "tests/logic.spec.ts"
   ]

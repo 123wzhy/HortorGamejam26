@@ -8,13 +8,13 @@ export type EngineActionKind =
     | "tooEarly"
     | "judged"
     | "missed"
-    | "finished"
     | "ignored";
 
 export interface EngineAction {
     kind: EngineActionKind;
     sequenceIndex: number;
     enteredCount: number;
+    finished: boolean;
     judgement?: JudgeResult;
     reason?: "wrong-direction" | "incomplete" | "expired" | "not-running" | "already-ready";
 }
@@ -158,9 +158,10 @@ export class SequenceEngine {
         this.lastJudgement = judgement.grade;
         this.advance();
         return {
-            kind: this.finished ? "finished" : "judged",
+            kind: "judged",
             sequenceIndex: resolvedIndex,
             enteredCount: 0,
+            finished: this.finished,
             judgement
         };
     }
@@ -175,9 +176,10 @@ export class SequenceEngine {
         this.lastJudgement = "Miss";
         this.advance();
         return {
-            kind: this.finished ? "finished" : "missed",
+            kind: "missed",
             sequenceIndex: resolvedIndex,
             enteredCount: 0,
+            finished: this.finished,
             judgement: miss,
             reason
         };
@@ -197,6 +199,7 @@ export class SequenceEngine {
             kind,
             sequenceIndex: this.sequenceIndex,
             enteredCount: this.entered.length,
+            finished: this.finished,
             reason
         };
     }

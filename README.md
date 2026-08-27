@@ -59,13 +59,14 @@ assets/scripts/
   gameplay/JudgeSystem.ts       可配置判定窗口
   gameplay/SequenceEngine.ts    序列、超时、分数、Combo、重开
   input/InputRouter.ts          键盘和触控动作归一化
+  input/PressedKeyState.ts      按键去重与失焦复位状态
   platform/BuildaAdapter.ts     ready、安全区、胶囊、宿主音频契约
   ui/GameBootstrap.ts           程序化 UI、视觉节拍、生命周期
 ```
 
-`SongClock` 每次判定都从 `performance.now()`（不可用时才回退 `Date.now()`）推导歌曲时间，不用每帧 `dt` 累加。切后台会冻结歌曲时钟，回前台从原位置继续。`setCalibrationOffsetMs()` 提供统一校准偏移入口；正式校准流程、设备档案和存档尚待曲目接入时确定。
+`SongClock` 每次判定都从 `performance.now()`（不可用时才回退 `Date.now()`）推导歌曲时间，不用每帧 `dt` 累加。Creator 生命周期事件、`visibilitychange` 和 `pagehide/pageshow` 共同保证切后台冻结歌曲时钟，回前台从原位置继续；窗口失焦时还会清空按键去重状态。`setCalibrationOffsetMs()` 提供统一校准偏移入口；正式校准流程、设备档案和存档尚待曲目接入时确定。
 
-`SequenceEngine` 和 `JudgeSystem` 不引用 `cc`，测试直接编译同一份 TypeScript 实现，避免维护一套与游戏实现漂移的 JS 镜像。测试覆盖判定边界、视觉节拍与谱面拍点对齐、错误方向、早按/不完整确认、过期 Miss、重开、时钟校准/暂停和 Builda 音频 Result 映射。
+`SequenceEngine` 和 `JudgeSystem` 不引用 `cc`，测试直接编译同一份 TypeScript 实现，避免维护一套与游戏实现漂移的 JS 镜像。测试覆盖判定边界、视觉节拍与谱面拍点对齐、错误方向、早按/不完整确认、最终命中/Miss/超时结束语义、失焦按键复位、重开、时钟校准/暂停和 Builda 音频 Result 映射。
 
 ## BuildaGame 接入
 
@@ -89,7 +90,7 @@ assets/scripts/
 
 使用命令输出的 `dev-url` 打开测试外壳。可切换横屏、刘海安全区并观察右上平台胶囊覆盖。游戏启动时先调用 `Builda.runtime.ready()`，完成后才启动谱面时钟；普通浏览器没有 Builda host 时会安全降级。
 
-`BuildaAdapter.viewportMetrics()` 每次按 CSS 视口与 Cocos 可见设计尺寸的比例换算 `safeArea()` 和 `capsuleMenuRect()`：分数、触控区避开安全区，重开按钮额外避开右上胶囊。背景仍铺满全屏。
+`BuildaAdapter.viewportMetrics()` 每次按 CSS 视口与 Cocos 可见设计尺寸的比例换算 `safeArea()` 和 `capsuleMenuRect()`：分数、触控区避开安全区；重开按钮按 `safe.right` 与胶囊右侧占用宽度中的较大值避让。背景仍铺满全屏。
 
 `BuildaAdapter` 已预留 `playBGM / stopBGM / playSFX` 契约，只有 SDK Result 的 `ok` 为 `true` 时才报告调用成功。正式音频应通过 `Builda.audio.*` 和平台资源包接入。当前只使用视觉节拍，不伪造音乐资源；游戏内也没有音乐/音效开关，静音由 Builda 平台通用设置统一管理。
 

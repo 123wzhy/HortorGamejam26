@@ -1,4 +1,5 @@
 import { Direction } from "../domain/Beatmap";
+import { PressedKeyState } from "./PressedKeyState";
 
 export type DirectionHandler = (direction: Direction) => void;
 export type ActionHandler = () => void;
@@ -8,7 +9,7 @@ export class InputRouter {
     private readonly onDirection: DirectionHandler;
     private readonly onBeat: ActionHandler;
     private readonly onRestart: ActionHandler;
-    private readonly pressed: { [keyCode: number]: boolean } = {};
+    private readonly pressed: PressedKeyState = new PressedKeyState();
     private attached: boolean = false;
 
     public constructor(onDirection: DirectionHandler, onBeat: ActionHandler, onRestart: ActionHandler) {
@@ -27,13 +28,16 @@ export class InputRouter {
     }
 
     public detach(): void {
-        if (!this.attached) {
-            return;
+        if (this.attached) {
+            cc.systemEvent.off(cc.SystemEvent.EventType.KEY_DOWN, this.handleKeyDown, this);
+            cc.systemEvent.off(cc.SystemEvent.EventType.KEY_UP, this.handleKeyUp, this);
+            this.attached = false;
         }
-        cc.systemEvent.off(cc.SystemEvent.EventType.KEY_DOWN, this.handleKeyDown, this);
-        cc.systemEvent.off(cc.SystemEvent.EventType.KEY_UP, this.handleKeyUp, this);
-        this.attached = false;
-        Object.keys(this.pressed).forEach((key) => delete this.pressed[Number(key)]);
+        this.resetPressed();
+    }
+
+    public resetPressed(): void {
+        this.pressed.reset();
     }
 
     public routeDirection(direction: Direction): void {
@@ -50,10 +54,9 @@ export class InputRouter {
 
     private handleKeyDown(event: cc.Event.EventKeyboard): void {
         const keyCode = event.keyCode;
-        if (this.pressed[keyCode]) {
+        if (!this.pressed.press(keyCode)) {
             return;
         }
-        this.pressed[keyCode] = true;
         switch (keyCode) {
             case cc.macro.KEY.left:
             case cc.macro.KEY.a:
@@ -84,6 +87,6 @@ export class InputRouter {
     }
 
     private handleKeyUp(event: cc.Event.EventKeyboard): void {
-        delete this.pressed[event.keyCode];
+        this.pressed.release(event.keyCode);
     }
 }

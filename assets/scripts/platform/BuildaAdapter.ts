@@ -22,6 +22,18 @@ function nonNegative(value: unknown): number {
     return typeof value === "number" && isFinite(value) ? Math.max(0, value) : 0;
 }
 
+export function calculateRightAvoidance(
+    safeRight: number,
+    capsuleRight: number,
+    capsuleWidth: number,
+    padding: number = 18
+): number {
+    const capsuleBlock = nonNegative(capsuleWidth) > 0
+        ? nonNegative(capsuleRight) + nonNegative(capsuleWidth)
+        : 0;
+    return Math.max(nonNegative(safeRight), capsuleBlock) + nonNegative(padding);
+}
+
 /** Thin platform boundary. Gameplay never reaches into the host bridge directly. */
 export class BuildaAdapter {
     public ready(): Promise<void> {
@@ -88,8 +100,8 @@ export class BuildaAdapter {
         return this.callAudio("stopBGM", []);
     }
 
-    public playSFX(path: string, key: string = "rhythm-hit", volume: number = 1): Promise<boolean> {
-        return this.callAudio("playSFX", [path, { key, volume }]);
+    public playSFX(path: string, sessionId: string = "rhythm-hit", volume: number = 1): Promise<boolean> {
+        return this.callAudio("playSFX", [path, { sessionId, volume }]);
     }
 
     private callAudio(method: string, args: any[]): Promise<boolean> {
