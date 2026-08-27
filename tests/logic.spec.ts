@@ -5,12 +5,23 @@ import { noteApproachProgress, timelineProgress } from "../assets/scripts/gamepl
 import { PressedKeyState } from "../assets/scripts/input/PressedKeyState";
 import { BuildaAdapter, calculateRightAvoidance } from "../assets/scripts/platform/BuildaAdapter";
 import { SongClock } from "../assets/scripts/timing/SongClock";
+import {
+    calculateNoteChipVerticalLayout,
+    calculateRhythmVerticalLayout,
+    RhythmVerticalLayout
+} from "../assets/scripts/ui/RhythmLayout";
 
 declare const global: any;
 
 function equal<T>(actual: T, expected: T, message: string): void {
     if (actual !== expected) {
         throw new Error(message + " (expected " + String(expected) + ", got " + String(actual) + ")");
+    }
+}
+
+function near(actual: number, expected: number, tolerance: number, message: string): void {
+    if (Math.abs(actual - expected) > tolerance) {
+        throw new Error(message + " (expected near " + expected + ", got " + actual + ")");
     }
 }
 
@@ -231,6 +242,117 @@ function testTimelineAndSafeAreaMath(): void {
     equal(calculateRightAvoidance(20, 10, 80), 108, "Larger capsule wins over right safe area");
 }
 
+function assertVerticalStack(layout: RhythmVerticalLayout, message: string): void {
+    equal(
+        layout.globalBlockBottom >= layout.buttonTop + 8,
+        true,
+        message + ": global judge block stays above the direction buttons"
+    );
+    equal(
+        layout.panelBottom >= layout.globalBlockTop + 12,
+        true,
+        message + ": group panel stays above the global judge block"
+    );
+    if (layout.showStage) {
+        const stageLowerExtent = layout.compact ? 22 : 28;
+        equal(
+            layout.stageBaseY - stageLowerExtent >= layout.panelTop + 8,
+            true,
+            message + ": visible stage lower edge keeps explicit clearance above the group panel"
+        );
+    }
+}
+
+function testSafeBottomVerticalLayout(): void {
+    const normal = calculateRhythmVerticalLayout({
+        viewportHeight: 720,
+        safeTop: 0,
+        safeBottom: 0,
+        directionPadScale: 1
+    });
+    equal(normal.showInstruction, true, "Normal landscape keeps the secondary instruction");
+    equal(normal.showStage, true, "Normal landscape keeps the decorative stage");
+    near(normal.panelY, -64, 0.001, "Normal landscape preserves the preferred panel position");
+    near(normal.panelHeight, 174, 0.001, "Normal landscape preserves the full panel height");
+    near(normal.buttonBottom, -346, 0.001, "Direction buttons keep a 14-unit bottom margin");
+    assertVerticalStack(normal, "normal landscape");
+
+    const bottomInset34 = calculateRhythmVerticalLayout({
+        viewportHeight: 720,
+        safeTop: 0,
+        safeBottom: 34,
+        directionPadScale: 1
+    });
+    equal(bottomInset34.showStage, true, "34-unit bottom inset keeps the stage when vertical room remains");
+    near(bottomInset34.buttonBottom, -312, 0.001, "34-unit inset remains below full-height touch controls");
+    assertVerticalStack(bottomInset34, "34-unit bottom inset");
+
+    const scaledSafeArea = calculateRhythmVerticalLayout({
+        viewportHeight: 720,
+        safeTop: 81.2,
+        safeBottom: 62.8,
+        directionPadScale: 1
+    });
+    equal(scaledSafeArea.panelBottom > normal.panelBottom, true, "Scaled iOS inset moves the panel up");
+    equal(scaledSafeArea.showStage, true, "Typical scaled safe area still keeps the stage");
+    near(
+        scaledSafeArea.buttonBottom,
+        -360 + 62.8 + 14,
+        0.001,
+        "Scaled iOS inset remains below the touch controls"
+    );
+    assertVerticalStack(scaledSafeArea, "scaled 44/34 CSS-pixel safe area");
+
+    const largeBottomInset = calculateRhythmVerticalLayout({
+        viewportHeight: 720,
+        safeTop: 81.2,
+        safeBottom: 170,
+        directionPadScale: 1
+    });
+    equal(largeBottomInset.showInstruction, false, "Large bottom inset hides secondary instructions first");
+    equal(largeBottomInset.showStage, false, "Large opposing insets hide the non-critical stage");
+    equal(largeBottomInset.panelHeight >= 118, true, "Large inset retains a usable note panel");
+    near(
+        largeBottomInset.buttonTop - largeBottomInset.buttonBottom,
+        84,
+        0.001,
+        "Vertical pressure never shrinks the direction buttons"
+    );
+    assertVerticalStack(largeBottomInset, "large bottom inset");
+
+    const narrowLandscape = calculateRhythmVerticalLayout({
+        viewportHeight: 540,
+        safeTop: 60,
+        safeBottom: 63,
+        directionPadScale: 1
+    });
+    equal(narrowLandscape.showInstruction, false, "Narrow landscape removes secondary instructions");
+    equal(narrowLandscape.showStage, false, "Narrow landscape hides the stage before crowding the panel");
+    equal(narrowLandscape.panelHeight >= 118, true, "Narrow landscape preserves the supported note panel height");
+    near(
+        narrowLandscape.buttonTop - narrowLandscape.buttonBottom,
+        84,
+        0.001,
+        "Narrow landscape keeps full touch height"
+    );
+    assertVerticalStack(narrowLandscape, "narrow landscape");
+
+    const minimumChipHeight = 118 - 47;
+    const chip = calculateNoteChipVerticalLayout(minimumChipHeight);
+    const arrowBottom = chip.arrowY - chip.arrowBoxHeight * 0.5;
+    const statusTop = chip.statusY + chip.statusBoxHeight * 0.5;
+    const statusBottom = chip.statusY - chip.statusBoxHeight * 0.5;
+    const miniBarTop = chip.miniBarY + chip.miniBarHalfHeight;
+    const miniBarBottom = chip.miniBarY - chip.miniBarHalfHeight;
+    equal(arrowBottom >= statusTop, true, "Minimum chip keeps arrow above persistent status text");
+    equal(statusBottom >= miniBarTop + 2, true, "Minimum chip keeps status text above the mini timing bar");
+    equal(
+        miniBarBottom >= -minimumChipHeight * 0.5,
+        true,
+        "Minimum chip keeps the mini timing bar inside its card"
+    );
+}
+
 function testSongClockCalibrationAndPause(): void {
     let now = 100;
     const clock = new SongClock(() => now);
@@ -299,9 +421,10 @@ async function run(): Promise<void> {
     testRestart();
     testPressedKeyResetAfterFocusLoss();
     testTimelineAndSafeAreaMath();
+    testSafeBottomVerticalLayout();
     testSongClockCalibrationAndPause();
     await testBuildaAudioResultMapping();
-    console.log("logic-tests=passed cases=13");
+    console.log("logic-tests=passed cases=14");
 }
 
 run().catch((error) => {

@@ -1,6 +1,6 @@
 # HortorGamejam26 横屏节奏框架
 
-这是一个可直接用 **Cocos Creator 2.4.9** 打开、构建和游玩的横屏手机音游 MVP。谱面按组合展示，但组合内每个方向键都有独立目标时刻：玩家在箭头自己的判定时间直接输入，逐键得到 `Perfect / Good / Bad / Miss`，不再需要额外的 BEAT 确认。
+这是一个可直接用 **Cocos Creator 2.4.9** 打开、构建和游玩的横屏手机音游 MVP。谱面按组合展示，但组合内每个方向键都有独立目标时刻：玩家在箭头自己的判定时间直接输入，每次方向输入即结算为 `Perfect / Good / Bad / Miss` 之一。
 
 当前版本不依赖 npm 第三方包、外部 CDN、图片或音频资源。界面由 `cc.Graphics`、`cc.Label` 和系统字体在运行时生成，因此仓库本身即可完成真实 Cocos Web 构建，而不是演示占位工程。
 
@@ -51,13 +51,13 @@ Demo 谱面包含 8 个确定性组合、每组 3–5 个方向，共 31 个 not
 
 所有窗口边界均包含在对应档位内：恰好 `±50ms` 是 Perfect，恰好 `±100ms` 是 Good，恰好 `±180ms` 是 Bad；只有晚于 `+180ms` 才自动 Miss。
 
-界面中当前组合的每个箭头 chip 都有独立 mini 判定条、移动 marker 和持久结果色；下部另有一条全局谱面判定条，显示整首进度、当前 note 的目标点、判定窗口和歌曲 marker。全局条位于组合面板与四个触控键之间，按底部安全区上移，不与触控区域重叠。
+界面中当前组合的每个箭头 chip 都有独立 mini 判定条、移动 marker 和持久结果色；下部另有一条全局谱面判定条，显示整首进度、当前 note 的目标点、判定窗口和歌曲 marker。纵向布局从底部安全区开始，依次分配四个触控键、全局判定条块和组合面板；空间不足时先隐藏次要操作说明和非关键舞台，再压缩并上移组合面板，同时守住可用面板高度和触控键的纵向尺寸。
 
 ## 架构
 
 ```text
 assets/scripts/
-  domain/Beatmap.ts             谱面、方向类型与 8 段 demo 数据
+  domain/Beatmap.ts             谱面、方向类型与 8 组 31 个逐键 note 数据
   timing/SongClock.ts           单调时钟、暂停/恢复、校准偏移
   gameplay/JudgeSystem.ts       四档逐 note 判定窗口与固定分值
   gameplay/SequenceEngine.ts    最早 note、超时、组推进、分数、Combo、重开
@@ -65,6 +65,7 @@ assets/scripts/
   input/InputRouter.ts          键盘和触控动作归一化
   input/PressedKeyState.ts      按键去重与失焦复位状态
   platform/BuildaAdapter.ts     ready、安全区、胶囊、宿主音频契约
+  ui/RhythmLayout.ts            可测试的安全区纵向栈布局
   ui/GameBootstrap.ts           原创程序化舞台、逐键状态 UI、安全区与生命周期
 ```
 

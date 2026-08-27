@@ -16,6 +16,7 @@
     "assets/scripts/gameplay/TimingProgress.ts",
     "assets/scripts/input/PressedKeyState.ts",
     "assets/scripts/platform/BuildaAdapter.ts",
+    "assets/scripts/ui/RhythmLayout.ts",
     "tests/logic.spec.ts"
   ]
 }

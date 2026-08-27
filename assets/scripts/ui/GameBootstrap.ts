@@ -5,6 +5,7 @@ import { noteApproachProgress, timelineProgress } from "../gameplay/TimingProgre
 import { InputRouter } from "../input/InputRouter";
 import { BuildaAdapter, BuildaViewportMetrics, calculateRightAvoidance } from "../platform/BuildaAdapter";
 import { SongClock } from "../timing/SongClock";
+import { calculateNoteChipVerticalLayout, calculateRhythmVerticalLayout } from "./RhythmLayout";
 
 const { ccclass } = cc._decorator;
 
@@ -80,6 +81,8 @@ export default class GameBootstrap extends cc.Component {
     private panelWidth: number = 1000;
     private panelHeight: number = 174;
     private stageBaseY: number = 92;
+    private dancerBaseScale: number = 1;
+    private stageVisible: boolean = true;
     private globalBarWidth: number = 900;
     private metrics: BuildaViewportMetrics = {
         safe: { top: 0, right: 0, bottom: 0, left: 0 },
@@ -275,9 +278,17 @@ export default class GameBootstrap extends cc.Component {
         const safeBottom = this.metrics.safe.bottom;
         const contentWidth = Math.max(320, this.viewportWidth - this.metrics.safe.left - this.metrics.safe.right);
         const contentCenterX = (this.metrics.safe.left - this.metrics.safe.right) * 0.5;
-        const compact = this.viewportHeight < 640;
+        const padNaturalWidth = 586;
+        const padScale = Math.max(0.82, Math.min(1, (contentWidth - 32) / padNaturalWidth));
+        const vertical = calculateRhythmVerticalLayout({
+            viewportHeight: this.viewportHeight,
+            safeTop,
+            safeBottom,
+            directionPadScale: padScale
+        });
+        const compact = vertical.compact;
         this.panelWidth = Math.max(320, Math.min(1000, contentWidth - 56));
-        this.panelHeight = compact ? 142 : 174;
+        this.panelHeight = vertical.panelHeight;
         this.globalBarWidth = Math.max(280, this.panelWidth - 84);
 
         this.drawBackground();
@@ -314,31 +325,31 @@ export default class GameBootstrap extends cc.Component {
         this.comboLabel.node.setPosition(rightEdge - 105, topY - 15);
         this.restartButton.setPosition(rightEdge - 63, topY - 71);
 
-        const panelY = compact ? -30 : -64;
+        const panelY = vertical.panelY;
         this.groupPanel.node.setPosition(contentCenterX, panelY);
         this.groupLabel.node.setContentSize(this.panelWidth - 48, 28);
         this.groupLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
         this.groupLabel.node.setPosition(contentCenterX, panelY + this.panelHeight * 0.5 - 17);
         this.sequenceRow.setPosition(contentCenterX, panelY - 9);
 
-        this.stageBaseY = panelY + this.panelHeight * 0.5 + (compact ? 49 : 70);
+        this.stageBaseY = vertical.stageBaseY;
+        this.dancerBaseScale = vertical.dancerScale;
+        this.stageVisible = vertical.showStage;
+        this.stage.node.active = this.stageVisible;
+        this.dancerNode.active = this.stageVisible;
         this.stage.node.setPosition(contentCenterX, this.stageBaseY);
         this.dancerNode.setPosition(contentCenterX, this.stageBaseY + 3);
-        this.dancerNode.scale = compact ? 0.78 : 1;
+        this.dancerNode.scale = this.dancerBaseScale;
 
-        const buttonHeight = 84;
-        const controlsY = -halfHeight + safeBottom + buttonHeight * 0.5 + 14;
-        const padNaturalWidth = 586;
-        const padScale = Math.max(0.82, Math.min(1, (contentWidth - 32) / padNaturalWidth));
-        this.directionPad.setPosition(contentCenterX, controlsY);
+        this.directionPad.setPosition(contentCenterX, vertical.controlsY);
         this.directionPad.scale = padScale;
 
-        const globalY = controlsY + buttonHeight * padScale * 0.5 + 31;
-        this.globalTimeline.node.setPosition(contentCenterX, globalY);
+        this.globalTimeline.node.setPosition(contentCenterX, vertical.globalLineY);
         this.progressLabel.node.setContentSize(this.globalBarWidth, 24);
-        this.progressLabel.node.setPosition(contentCenterX, globalY + 22);
+        this.progressLabel.node.setPosition(contentCenterX, vertical.progressLabelY);
         this.instructionLabel.node.setContentSize(this.globalBarWidth, 22);
-        this.instructionLabel.node.setPosition(contentCenterX, globalY - 17);
+        this.instructionLabel.node.setPosition(contentCenterX, vertical.instructionLabelY);
+        this.instructionLabel.node.active = vertical.showInstruction;
 
         this.groupRenderKey = "";
         const songTimeMs = this.clock.isStarted() ? this.clock.currentTimeMs() : 0;
@@ -446,6 +457,7 @@ export default class GameBootstrap extends cc.Component {
         const gap = count === 5 ? 9 : 12;
         const chipWidth = Math.max(66, Math.min(130, (this.panelWidth - 62 - gap * (count - 1)) / count));
         const chipHeight = this.panelHeight - 47;
+        const chipLayout = calculateNoteChipVerticalLayout(chipHeight);
         const stride = chipWidth + gap;
         groupStatus.notes.forEach((item, noteIndex) => {
             const chip = new cc.Node("Note-" + (noteIndex + 1));
@@ -454,16 +466,28 @@ export default class GameBootstrap extends cc.Component {
             chip.x = (noteIndex - (count - 1) * 0.5) * stride;
             const card = chip.addComponent(cc.Graphics);
 
-            const arrow = this.makeLabel(chip, "Arrow", ARROW_TEXT[item.note.direction], 36, cc.color(245, 248, 255));
-            arrow.node.setContentSize(chipWidth - 10, 48);
-            arrow.node.setPosition(0, 22);
-            const status = this.makeLabel(chip, "Status", "未到", 13, cc.color(145, 157, 194));
-            status.node.setContentSize(chipWidth - 8, 22);
-            status.node.setPosition(0, -9);
+            const arrow = this.makeLabel(
+                chip,
+                "Arrow",
+                ARROW_TEXT[item.note.direction],
+                chipLayout.arrowFontSize,
+                cc.color(245, 248, 255)
+            );
+            arrow.node.setContentSize(chipWidth - 10, chipLayout.arrowBoxHeight);
+            arrow.node.setPosition(0, chipLayout.arrowY);
+            const status = this.makeLabel(
+                chip,
+                "Status",
+                "未到",
+                chipLayout.statusFontSize,
+                cc.color(145, 157, 194)
+            );
+            status.node.setContentSize(chipWidth - 8, chipLayout.statusBoxHeight);
+            status.node.setPosition(0, chipLayout.statusY);
 
             const barNode = new cc.Node("MiniJudgeBar");
             barNode.parent = chip;
-            barNode.setPosition(0, -chipHeight * 0.5 + 18);
+            barNode.setPosition(0, chipLayout.miniBarY);
             const miniBar = barNode.addComponent(cc.Graphics);
             this.noteChipViews.push({
                 node: chip,
@@ -613,13 +637,16 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private updateStage(songTimeMs: number): void {
+        if (!this.stageVisible) {
+            return;
+        }
         const beatDuration = 60000 / DEMO_BEATMAP.bpm;
         const phase = ((songTimeMs % beatDuration) + beatDuration) % beatDuration / beatDuration;
         const pulse = Math.pow(1 - phase, 2);
         this.dancerNode.y = this.stageBaseY + 3 + pulse * 8;
         this.dancerNode.rotation = Math.sin(songTimeMs / 420) * 3.5;
-        this.dancerNode.scaleX = (this.viewportHeight < 640 ? 0.78 : 1) * (1 + pulse * 0.035);
-        this.dancerNode.scaleY = (this.viewportHeight < 640 ? 0.78 : 1) * (1 - pulse * 0.025);
+        this.dancerNode.scaleX = this.dancerBaseScale * (1 + pulse * 0.035);
+        this.dancerNode.scaleY = this.dancerBaseScale * (1 - pulse * 0.025);
     }
 
     private drawBackground(): void {

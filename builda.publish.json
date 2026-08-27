@@ -1,7 +1,7 @@
 {
   "title": "HortorGamejam26",
-  "tagline": "跟随霓虹节拍完成方向序列。",
-  "desc": "横屏节奏方向键游戏框架：依次输入方向动作，并在目标节拍确认以获得 Perfect、Great、Good 或 Miss 判定。",
+  "tagline": "逐键踩准霓虹箭头节拍。",
+  "desc": "横屏逐键节奏游戏框架：每个箭头拥有独立目标时刻，直接按下对应方向并逐键获得失败、差、好或完美判定。",
   "category": "music",
   "engine": "h5",
   "tags": ["h5", "cocos", "rhythm", "music"],
