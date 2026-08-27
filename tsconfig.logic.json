@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "es5",
+    "module": "commonjs",
+    "lib": ["es2015", "dom"],
+    "strict": true,
+    "esModuleInterop": false,
+    "skipLibCheck": true,
+    "outDir": "temp/logic-tests"
+  },
+  "include": [
+    "assets/scripts/domain/Beatmap.ts",
+    "assets/scripts/timing/SongClock.ts",
+    "assets/scripts/gameplay/JudgeSystem.ts",
+    "assets/scripts/gameplay/SequenceEngine.ts",
+    "assets/scripts/platform/BuildaAdapter.ts",
+    "tests/logic.spec.ts"
+  ]
+}

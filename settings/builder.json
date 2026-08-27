@@ -1,0 +1,23 @@
+{
+  "appBundle": false,
+  "debug": false,
+  "encryptJs": false,
+  "excludeScenes": [],
+  "inlineSpriteFrames": true,
+  "inlineSpriteFrames_native": true,
+  "mainIsRemote": false,
+  "md5Cache": false,
+  "mergeStartScene": false,
+  "orientation": {
+    "landscapeLeft": true,
+    "landscapeRight": true,
+    "portrait": false,
+    "upsideDown": false
+  },
+  "packageName": "game.builda.hortorgamejam26",
+  "platform": "web-mobile",
+  "sourceMaps": false,
+  "startScene": "2d2f792f-a40c-49bb-a189-ed176a246e49",
+  "title": "HortorGamejam26",
+  "webOrientation": "landscape"
+}

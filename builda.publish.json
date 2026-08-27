@@ -1,0 +1,23 @@
+{
+  "title": "HortorGamejam26",
+  "tagline": "跟随霓虹节拍完成方向序列。",
+  "desc": "横屏节奏方向键游戏框架：依次输入方向动作，并在目标节拍确认以获得 Perfect、Great、Good 或 Miss 判定。",
+  "category": "music",
+  "engine": "h5",
+  "tags": ["h5", "cocos", "rhythm", "music"],
+  "orientation": "landscape",
+  "minChromeMajor": 80,
+  "minIOSMajor": 15,
+  "coverKind": "palette",
+  "coverPalette": "ember",
+  "coverUrl": "",
+  "buildPrefix": "",
+  "buildEntry": "index.html",
+  "buildSize": 0,
+  "bundleUrl": "",
+  "bundleMd5": "",
+  "bundleVersion": "",
+  "bundleEntry": "index.html",
+  "bundleSize": 0,
+  "sdkVersion": ""
+}

@@ -1,0 +1,12 @@
+# Cocos Creator generated state
+library/
+local/
+temp/
+
+# Reproducible web output and packages
+build/
+
+# Local tooling
+node_modules/
+*.log
+.DS_Store

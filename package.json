@@ -1,0 +1,18 @@
+{
+  "name": "hortor-gamejam26-rhythm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cocos Creator 2.4.9 横屏节奏方向键游戏框架",
+  "scripts": {
+    "test": "sh tools/test-logic.sh",
+    "build": "sh tools/build-web.sh",
+    "verify": "sh tools/verify-builda.sh"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "cocosCreator": {
+    "version": "2.4.9",
+    "platform": "web-mobile"
+  }
+}
