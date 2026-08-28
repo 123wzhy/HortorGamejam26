@@ -10,7 +10,7 @@
 
 - macOS 上安装 Cocos Creator `2.4.9`，默认路径为 `/Applications/Cocos/Creator/2.4.9/CocosCreator.app`。
 - Node.js 14+ 与全局 `tsc` 用于纯逻辑测试；本项目不执行 `npm install`。
-- `zip` 与 `unzip` 用于生成和检查 Builda H5 Bundle。
+- `zip`、`unzip` 与 `jq` 用于生成和检查 Builda H5 Bundle；项目内 Builda 工具与 17 张贴图清单门禁都会调用 `jq`。
 - 项目内 BuildaGame 工具链版本为 `0.4.36`。
 
 在 Creator 中选择“打开其他项目”，打开本仓库根目录，运行起始场景 `assets/Scene/Main.fire` 即可预览。设计分辨率为 `1280 × 720`，Canvas 固定高度并适配不同横屏宽高比。
@@ -42,7 +42,7 @@ COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 
 启动后先进入主界面：“开始跳舞”进入谱面；“帮助”展示判定规则；“排行榜”只展示诚实的本局成绩并明确提示平台榜尚未配置；“设置”在 Builda 宿主内打开平台统一的暂停/设置/退出页，普通浏览器中显示兼容说明。玩法右上可重新开始或返回主页。
 
-`GameBootstrap.onLoad()` 会先同步创建可见、可点击的降级菜单并绑定输入，再并行等待 Builda 平台与 `texture` Bundle。平台 ready 后即可点击开始；美术回调延迟或不返回不会再造成空白或阻塞。贴图稍后到达时只原位更新现有 SpriteFrame，不重建按钮或重复绑定监听。菜单状态由同一启动状态模型计算，因此平台 ready 与美术成功/缺失的回调顺序不会互相覆盖成错误提示。
+`GameBootstrap.onLoad()` 会先同步创建可见、可点击的降级菜单并绑定输入，再并行等待 Builda 平台与 `texture` Bundle。平台 ready 后即可点击开始；若 `Builda.runtime.ready()` 超过 3 秒仍未返回，适配器会清理计时器、记录警告并进入浏览器兼容模式，避免宿主异常永久封锁入口。美术回调延迟或不返回不会再造成空白或阻塞。贴图稍后到达时只原位更新现有 SpriteFrame，不重建按钮或重复绑定监听。菜单状态由同一启动状态模型计算，因此平台 ready 与美术成功/缺失的回调顺序不会互相覆盖成错误提示。
 
 引擎始终只处理时间最早的未结算 note。输入早于当前 note 的最早可判定时刻时，只显示“请等待”，不会消耗 note；进入 `Bad` 窗口后按错方向会让当前 note 立即失败；超过最晚边界仍未输入则自动失败。分数和 Combo 都逐 note 结算，失败断连击，组合结束后自动展示下一组。完成组合会保留约 `420ms`，让最后一键及整组状态清晰可见。
 
@@ -87,7 +87,7 @@ assets/scripts/
 
 `SongClock` 每次判定都从 `performance.now()`（不可用时才回退 `Date.now()`）推导歌曲时间，不用每帧 `dt` 累加。Creator 生命周期事件、`visibilitychange` 和 `pagehide/pageshow` 共同保证切后台冻结歌曲时钟，回前台从原位置继续；窗口失焦时还会清空按键去重状态。`setCalibrationOffsetMs()` 提供统一校准偏移入口；正式校准流程、设备档案和存档尚待曲目接入时确定。
 
-`SequenceEngine`、`JudgeSystem`、`TimingProgress` 和 `UiStartupState` 不引用 `cc`，测试直接编译同一份 TypeScript 实现，避免维护一套与游戏实现漂移的 JS 镜像。测试覆盖四档判定的全部边界、100 BPM 拍点对齐、过早不消耗、窗口内错键、自动超时、逐 note 分数与连击、组合推进和结果持久化、末 note 失败后正常完成、一次输入先补超时再处理新 current note、全局/mini marker 边界、失焦按键复位、重开、时钟校准/暂停、Builda 音频 Result 映射，以及平台/美术先后完成、缺图和美术挂起时的启动门控。
+`SequenceEngine`、`JudgeSystem`、`TimingProgress`、`RhythmLayout` 和 `UiStartupState` 不引用 `cc`，测试直接编译同一份 TypeScript 实现，避免维护一套与游戏实现漂移的 JS 镜像。测试覆盖四档判定的全部边界、100 BPM 拍点对齐、过早不消耗、窗口内错键、自动超时、逐 note 分数与连击、组合推进和结果持久化、末 note 失败后正常完成、一次输入先补超时再处理新 current note、全局/mini marker 边界、失焦按键复位、重开、时钟校准/暂停、Builda 音频 Result 映射、ready 超时兼容降级、菜单页脚间距，以及平台/美术先后完成、缺图和美术挂起时的启动门控。
 
 ## BuildaGame 接入
 

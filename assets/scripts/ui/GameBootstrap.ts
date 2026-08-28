@@ -6,7 +6,11 @@ import { InputRouter } from "../input/InputRouter";
 import { BuildaAdapter, BuildaViewportMetrics, calculateRightAvoidance } from "../platform/BuildaAdapter";
 import { SongClock } from "../timing/SongClock";
 import { ArtAssetCatalog, ArtAssetName, REQUIRED_ART_ASSETS } from "./ArtAssetCatalog";
-import { calculateNoteChipVerticalLayout, calculateRhythmVerticalLayout } from "./RhythmLayout";
+import {
+    calculateMenuFooterVerticalLayout,
+    calculateNoteChipVerticalLayout,
+    calculateRhythmVerticalLayout
+} from "./RhythmLayout";
 import {
     canEnterGameplay,
     initialUiStartupState,
@@ -715,18 +719,24 @@ export default class GameBootstrap extends cc.Component {
 
         const startScaleLimit = compact ? 0.62 - safePressure * 0.08 : 0.76;
         const startScale = Math.min(startScaleLimit, Math.max(0.52, (contentWidth - 80) / 527));
-        const hintY = -halfHeight + this.metrics.safe.bottom + 40;
-        const startY = hintY + 50 + 72.5 * startScale;
-        const statusY = startY + 82 * startScale;
+        const footer = calculateMenuFooterVerticalLayout({
+            viewportHeight: this.viewportHeight,
+            safeBottom: this.metrics.safe.bottom,
+            startButtonHeight: this.menuStartButton.height,
+            startButtonScale: startScale
+        });
         this.menuStartButton.scale = startScale;
-        this.menuStartButton.setPosition(contentCenterX, startY);
-        this.menuHintRow.setPosition(contentCenterX, hintY);
-        this.menuStatusLabel.node.setContentSize(Math.min(620, contentWidth - 40), 24);
-        this.menuStatusLabel.node.setPosition(contentCenterX, statusY);
+        this.menuStartButton.setPosition(contentCenterX, footer.startY);
+        this.menuHintRow.setPosition(contentCenterX, footer.hintY);
+        this.menuStatusLabel.node.setContentSize(
+            Math.min(620, contentWidth - 40),
+            footer.statusLabelHeight
+        );
+        this.menuStatusLabel.node.setPosition(contentCenterX, footer.statusY);
 
         const panelAspect = 696 / 565;
         const preferredCardWidth = Math.min(310, contentWidth * 0.28);
-        const cardBottom = statusY + 20;
+        const cardBottom = footer.cardBottom;
         const logoBottom = this.menuLogo.y - logoHeight * 0.5;
         const availableCardHeight = Math.max(96, logoBottom - 8 - cardBottom);
         const cardHeight = Math.min(

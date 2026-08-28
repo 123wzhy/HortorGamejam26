@@ -6,8 +6,10 @@ import { PressedKeyState } from "../assets/scripts/input/PressedKeyState";
 import { BuildaAdapter, calculateRightAvoidance } from "../assets/scripts/platform/BuildaAdapter";
 import { SongClock } from "../assets/scripts/timing/SongClock";
 import {
+    calculateMenuFooterVerticalLayout,
     calculateNoteChipVerticalLayout,
     calculateRhythmVerticalLayout,
+    MenuFooterVerticalLayout,
     RhythmVerticalLayout
 } from "../assets/scripts/ui/RhythmLayout";
 import {
@@ -405,6 +407,57 @@ function testSafeBottomVerticalLayout(): void {
     );
 }
 
+function assertMenuFooterStack(layout: MenuFooterVerticalLayout, message: string): void {
+    near(
+        layout.statusBottom - layout.startButtonTop,
+        layout.buttonStatusGap,
+        0.001,
+        message + ": status label keeps its explicit gap above the scaled start button"
+    );
+    equal(
+        layout.statusBottom > layout.startButtonTop,
+        true,
+        message + ": status label never overlaps the start button"
+    );
+    near(
+        layout.cardBottom - layout.statusTop,
+        layout.statusCardGap,
+        0.001,
+        message + ": cards keep their explicit gap above the status label"
+    );
+    equal(
+        layout.cardBottom > layout.statusTop,
+        true,
+        message + ": cards never overlap the status label"
+    );
+}
+
+function testMenuFooterVerticalLayout(): void {
+    const desktop = calculateMenuFooterVerticalLayout({
+        viewportHeight: 720,
+        safeBottom: 0,
+        startButtonHeight: 145,
+        startButtonScale: 0.76
+    });
+    assertMenuFooterStack(desktop, "1280x720 menu");
+
+    const compact = calculateMenuFooterVerticalLayout({
+        viewportHeight: 540,
+        safeBottom: 0,
+        startButtonHeight: 145,
+        startButtonScale: 0.62
+    });
+    assertMenuFooterStack(compact, "960x540 menu");
+
+    const compactSafeArea = calculateMenuFooterVerticalLayout({
+        viewportHeight: 540,
+        safeBottom: 63,
+        startButtonHeight: 145,
+        startButtonScale: 0.5544
+    });
+    assertMenuFooterStack(compactSafeArea, "960x540 scaled safe-area menu");
+}
+
 function testSongClockCalibrationAndPause(): void {
     let now = 100;
     const clock = new SongClock(() => now);
@@ -458,6 +511,76 @@ async function testBuildaAudioResultMapping(): Promise<void> {
         equal(await new BuildaAdapter().playSFX("audio/sfx/hit.ogg"), false, "Missing host maps to false");
         equal(await new BuildaAdapter().openPlatformMenu(), false, "Missing host cannot open platform settings");
     } finally {
+        if (hadWindow) {
+            global.window = previousWindow;
+        } else {
+            delete global.window;
+        }
+    }
+}
+
+function waitForTimer(milliseconds: number): Promise<void> {
+    return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function testBuildaReadyBoundedFallback(): Promise<void> {
+    const hadWindow = Object.prototype.hasOwnProperty.call(global, "window");
+    const previousWindow = global.window;
+    const previousWarn = console.warn;
+    const warnings: string[] = [];
+    let hostReadyCalls = 0;
+    let resolveLateHostReady: () => void = () => undefined;
+
+    try {
+        console.warn = (...args: any[]): void => {
+            warnings.push(args.map((value) => String(value)).join(" "));
+        };
+        global.window = {
+            Builda: {
+                runtime: {
+                    ready: () => {
+                        hostReadyCalls += 1;
+                        return new Promise<void>((resolve) => {
+                            resolveLateHostReady = resolve;
+                        });
+                    }
+                }
+            }
+        };
+
+        let startup = initialUiStartupState();
+        let adapterSettlements = 0;
+        await new BuildaAdapter(5).ready().then(() => {
+            adapterSettlements += 1;
+            startup = markPlatformReady(startup);
+        });
+        equal(hostReadyCalls, 1, "A timed-out handshake calls runtime.ready exactly once");
+        equal(adapterSettlements, 1, "A pending host Promise settles the adapter through its timeout once");
+        equal(canEnterGameplay(startup), true, "GameBootstrap's ready continuation enables gameplay after timeout");
+        equal(warnings.length, 1, "A timed-out handshake emits one compatibility warning");
+        equal(warnings[0].indexOf("timed out after 5ms") >= 0, true, "Timeout warning reports the injected bound");
+
+        resolveLateHostReady();
+        await Promise.resolve();
+        await Promise.resolve();
+        equal(adapterSettlements, 1, "A late host resolve cannot settle the adapter twice");
+
+        warnings.length = 0;
+        global.window.Builda.runtime.ready = () => Promise.reject(new Error("fixture rejection"));
+        await new BuildaAdapter(15).ready();
+        await waitForTimer(30);
+        equal(warnings.length, 1, "A rejected handshake emits one failure warning and clears its timer");
+        equal(warnings[0].indexOf("runtime.ready failed") >= 0, true, "Rejected handshake uses fallback mode");
+
+        warnings.length = 0;
+        global.window.Builda.runtime.ready = () => {
+            throw new Error("fixture throw");
+        };
+        await new BuildaAdapter(5).ready();
+        equal(warnings.length, 1, "A thrown handshake emits one failure warning");
+        equal(warnings[0].indexOf("runtime.ready threw") >= 0, true, "Thrown handshake uses fallback mode");
+    } finally {
+        console.warn = previousWarn;
         if (hadWindow) {
             global.window = previousWindow;
         } else {
@@ -522,10 +645,12 @@ async function run(): Promise<void> {
     testPressedKeyResetAfterFocusLoss();
     testTimelineAndSafeAreaMath();
     testSafeBottomVerticalLayout();
+    testMenuFooterVerticalLayout();
     testSongClockCalibrationAndPause();
     testUiStartupRaceAndFallback();
+    await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
-    console.log("logic-tests=passed cases=15");
+    console.log("logic-tests=passed cases=17");
 }
 
 run().catch((error) => {
