@@ -1,0 +1,213 @@
+{
+  "ver": "1.1.3",
+  "uuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
+  "importer": "gltf",
+  "scaleFactor": 1,
+  "boneCount": 54,
+  "precomputeJointMatrix": false,
+  "animationFrameRate": 30,
+  "subMetas": {
+    "undefined.mesh": {
+      "ver": "1.0.3",
+      "uuid": "f5519b34-0494-408b-b6cb-4f2da174b463",
+      "importer": "mesh",
+      "verts": 44995,
+      "tris": 96105,
+      "submeshes": 1,
+      "attributes": [
+        [
+          "a_joints",
+          "a_normal",
+          "a_position",
+          "a_uv0",
+          "a_weights"
+        ]
+      ],
+      "minPos": {
+        "x": -0.00773073221,
+        "y": 0.000106430052,
+        "z": -0.00396334426
+      },
+      "maxPos": {
+        "x": 0.00718841795,
+        "y": 0.0181184411,
+        "z": 0.00326609937
+      },
+      "name": "undefined.mesh",
+      "subMetas": {}
+    },
+    "BullDancer-0.skeleton": {
+      "ver": "1.0.3",
+      "uuid": "b5237fe3-33ba-4e5c-aa92-f001c026f455",
+      "importer": "skeleton",
+      "name": "BullDancer-0.skeleton",
+      "subMetas": {}
+    },
+    "IdleSway.sac": {
+      "ver": "1.0.3",
+      "uuid": "99e0feb2-810e-4ac5-a320-95b0a8a30535",
+      "importer": "skeleton-animation-clip",
+      "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
+      "animationID": 0,
+      "name": "IdleSway.sac",
+      "maxFrameCount": 33,
+      "totalFrameCount": 1376,
+      "duration": 1.0666667222976685,
+      "animationFrameRate": 30,
+      "subMetas": {}
+    },
+    "DanceCombo.sac": {
+      "ver": "1.0.3",
+      "uuid": "449514a8-008d-4e24-b6f2-448baf88e5e8",
+      "importer": "skeleton-animation-clip",
+      "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
+      "animationID": 1,
+      "name": "DanceCombo.sac",
+      "maxFrameCount": 805,
+      "totalFrameCount": 16827,
+      "duration": 26.80000114440918,
+      "animationFrameRate": 30,
+      "subMetas": {}
+    },
+    "ResultPose.sac": {
+      "ver": "1.0.3",
+      "uuid": "0c5982f9-199d-428f-9367-dbbb19300651",
+      "importer": "skeleton-animation-clip",
+      "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
+      "animationID": 2,
+      "name": "ResultPose.sac",
+      "maxFrameCount": 565,
+      "totalFrameCount": 11879,
+      "duration": 18.80000114440918,
+      "animationFrameRate": 30,
+      "subMetas": {}
+    },
+    "BullDancer.prefab": {
+      "ver": "1.3.2",
+      "uuid": "645065fb-eb39-42f3-af21-bb84bc9d90f2",
+      "importer": "prefab",
+      "optimizationPolicy": "AUTO",
+      "asyncLoadAssets": false,
+      "readonly": true,
+      "content": [
+        {
+          "__type__": "cc.Prefab",
+          "_name": "",
+          "_objFlags": 0,
+          "data": {
+            "__id__": 1
+          }
+        },
+        {
+          "__type__": "cc.Node",
+          "_name": "Sprite",
+          "_objFlags": 0,
+          "_opacity": 255,
+          "_color": {
+            "__type__": "cc.Color",
+            "r": 255,
+            "g": 255,
+            "b": 255,
+            "a": 255
+          },
+          "_cascadeOpacityEnabled": true,
+          "_parent": null,
+          "_anchorPoint": {
+            "__type__": "cc.Vec2",
+            "x": 0.5,
+            "y": 0.5
+          },
+          "_contentSize": {
+            "__type__": "cc.Size",
+            "width": 40,
+            "height": 36
+          },
+          "_children": [],
+          "_skewX": 0,
+          "_skewY": 0,
+          "_localZOrder": 0,
+          "_globalZOrder": 0,
+          "_tag": -1,
+          "_opacityModifyRGB": false,
+          "_reorderChildDirty": false,
+          "_id": "",
+          "_active": true,
+          "_components": [
+            {
+              "__id__": 2
+            }
+          ],
+          "_prefab": {
+            "__id__": 3
+          },
+          "_eulerAngles": {
+            "__type__": "cc.Vec3",
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "_trs": {
+            "__type__": "TypedArray",
+            "ctor": "Float64Array",
+            "array": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "__type__": "cc.Sprite",
+          "_name": "",
+          "_objFlags": 0,
+          "node": {
+            "__id__": 1
+          },
+          "_enabled": true,
+          "_spriteFrame": {
+            "__uuid__": "8cdb44ac-a3f6-449f-b354-7cd48cf84061"
+          },
+          "_type": 0,
+          "_sizeMode": 1,
+          "_fillType": 0,
+          "_fillCenter": {
+            "__type__": "cc.Vec2",
+            "x": 0,
+            "y": 0
+          },
+          "_fillStart": 0,
+          "_fillRange": 0,
+          "_isTrimmedMode": true,
+          "_srcBlendFactor": 770,
+          "_dstBlendFactor": 771,
+          "_atlas": null
+        },
+        {
+          "__type__": "cc.PrefabInfo",
+          "root": {
+            "__id__": 1
+          },
+          "asset": null,
+          "fileId": "d7118yAG5lKybkFOAh8koPL"
+        }
+      ],
+      "name": "BullDancer.prefab",
+      "subMetas": {}
+    },
+    "defaultMat.mtl": {
+      "ver": "1.0.5",
+      "uuid": "ab61fba6-5315-4dd8-a9d4-b829c9412ae5",
+      "importer": "material",
+      "dataAsSubAsset": null,
+      "name": "defaultMat.mtl",
+      "subMetas": {}
+    }
+  }
+}

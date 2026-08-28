@@ -1,4 +1,9 @@
 import { DEMO_BEATMAP, Direction } from "../domain/Beatmap";
+import {
+    GroupDanceFlow,
+    GroupDanceSegment,
+    GroupDanceTransition
+} from "../gameplay/GroupDanceFlow";
 import { GroupNoteStatus, EngineAction, SequenceEngine } from "../gameplay/SequenceEngine";
 import { DEFAULT_JUDGE_WINDOWS, JudgeGrade, JudgeSystem } from "../gameplay/JudgeSystem";
 import { noteApproachProgress, timelineProgress } from "../gameplay/TimingProgress";
@@ -6,6 +11,7 @@ import { InputRouter } from "../input/InputRouter";
 import { BuildaAdapter, BuildaViewportMetrics, calculateRightAvoidance } from "../platform/BuildaAdapter";
 import { SongClock } from "../timing/SongClock";
 import { ArtAssetCatalog, ArtAssetName, REQUIRED_ART_ASSETS } from "./ArtAssetCatalog";
+import { DancerAnimationController } from "./DancerAnimationController";
 import {
     calculateMenuCardVerticalLayout,
     calculateMenuFooterVerticalLayout,
@@ -38,7 +44,6 @@ const GRADE_TEXT: { [key: string]: string } = {
 };
 
 const NOTE_APPROACH_MS = 1200;
-const GROUP_RESULT_HOLD_MS = 420;
 const DIRECTIONS: Direction[] = ["left", "down", "up", "right"];
 const DEMO_NOTE_COUNT = DEMO_BEATMAP.groups.reduce((count, group) => count + group.notes.length, 0);
 const SMALL_ARROW_ASPECT = 73 / 71;
@@ -76,6 +81,7 @@ export default class GameBootstrap extends cc.Component {
     private readonly clock: SongClock = new SongClock();
     private readonly judge: JudgeSystem = new JudgeSystem();
     private readonly engine: SequenceEngine = new SequenceEngine(DEMO_BEATMAP, this.judge);
+    private readonly danceFlow: GroupDanceFlow = new GroupDanceFlow(DEMO_BEATMAP.groups.length);
     private readonly songDurationMs: number =
         DEMO_BEATMAP.groups[DEMO_BEATMAP.groups.length - 1].notes.slice(-1)[0].targetTimeMs
         + DEFAULT_JUDGE_WINDOWS.badMs;
@@ -112,6 +118,8 @@ export default class GameBootstrap extends cc.Component {
     private infoBody: cc.Label = null;
     private stage: cc.Graphics = null;
     private dancerNode: cc.Node = null;
+    private dancerFallback: cc.Graphics = null;
+    private dancerController: DancerAnimationController | null = null;
     private groupPanel: cc.Graphics = null;
     private sequenceRow: cc.Node = null;
     private globalTimeline: cc.Graphics = null;
@@ -148,10 +156,10 @@ export default class GameBootstrap extends cc.Component {
     private uiReady: boolean = false;
     private gameplayActive: boolean = false;
     private pausedByHost: boolean = false;
+    private clockHeldForDanceFlow: boolean = false;
     private hostSuspended: boolean = false;
     private groupRenderKey: string = "";
     private heldGroupIndex: number = -1;
-    private holdUntilSongTimeMs: number = 0;
     private lastResultText: string = "等待第一键";
     private lastResultColor: cc.Color = null;
     private messageExpiresAtMs: number = 0;
@@ -188,6 +196,8 @@ export default class GameBootstrap extends cc.Component {
 
     private initializeUi(): void {
         this.buildUi();
+        this.dancerController = new DancerAnimationController(this.dancerNode, this.dancerFallback);
+        this.dancerController.init();
         this.input = new InputRouter(
             (direction) => this.onDirection(direction),
             () => this.restartGame()
@@ -257,6 +267,10 @@ export default class GameBootstrap extends cc.Component {
     }
 
     protected onDestroy(): void {
+        if (this.dancerController) {
+            this.dancerController.dispose();
+            this.dancerController = null;
+        }
         if (this.input) {
             this.input.detach();
         }
@@ -281,14 +295,27 @@ export default class GameBootstrap extends cc.Component {
         }
     }
 
-    protected update(): void {
-        if (!this.gameplayActive || !canEnterGameplay(this.startupState)
+    protected update(deltaSeconds: number): void {
+        if (!this.gameplayActive || !canEnterGameplay(this.startupState) || this.hostSuspended) {
+            return;
+        }
+
+        const danceSnapshot = this.danceFlow.getSnapshot();
+        if (danceSnapshot.phase === "dance") {
+            this.updateDanceInterlude(deltaSeconds);
+            return;
+        }
+        if (danceSnapshot.phase === "result"
             || !this.clock.isStarted() || this.clock.isPaused()) {
             return;
         }
 
         const songTimeMs = this.clock.currentTimeMs();
         this.presentActions(this.engine.update(songTimeMs), songTimeMs);
+        if (this.danceFlow.getSnapshot().phase === "dance") {
+            this.refreshStats();
+            return;
+        }
         this.renderGroup(songTimeMs);
         this.updateNoteChips(songTimeMs);
         this.updateGlobalTimeline(songTimeMs);
@@ -306,6 +333,8 @@ export default class GameBootstrap extends cc.Component {
         this.menuHintArrows = [];
         this.directionButtons = [];
         this.noteChipViews = [];
+        const dancerGroupIndex = this.renderGroupIndex("dancer");
+        const hudGroupIndex = this.renderGroupIndex("hud");
         this.root = new cc.Node("RhythmUI");
         this.root.parent = this.node;
 
@@ -322,8 +351,10 @@ export default class GameBootstrap extends cc.Component {
 
         this.gameRoot = new cc.Node("Gameplay");
         this.gameRoot.parent = this.root;
+        this.assignRenderGroup(this.gameRoot, hudGroupIndex);
         this.menuRoot = new cc.Node("MainMenu");
         this.menuRoot.parent = this.root;
+        this.assignRenderGroup(this.menuRoot, hudGroupIndex);
 
         this.menuLogo = this.makeSpriteNode(
             this.menuRoot,
@@ -459,11 +490,14 @@ export default class GameBootstrap extends cc.Component {
 
         const stageNode = new cc.Node("OriginalStage");
         stageNode.parent = this.gameRoot;
+        this.assignRenderGroup(stageNode, dancerGroupIndex);
         this.stage = stageNode.addComponent(cc.Graphics);
 
         this.dancerNode = new cc.Node("AbstractDancer");
-        this.dancerNode.parent = this.gameRoot;
-        this.drawDancer(this.dancerNode.addComponent(cc.Graphics));
+        this.dancerNode.parent = this.root;
+        this.assignRenderGroup(this.dancerNode, dancerGroupIndex);
+        this.dancerFallback = this.dancerNode.addComponent(cc.Graphics);
+        this.drawDancer(this.dancerFallback);
 
         const panelNode = new cc.Node("CurrentGroupPanel");
         panelNode.parent = this.gameRoot;
@@ -531,6 +565,7 @@ export default class GameBootstrap extends cc.Component {
 
         this.infoOverlay = new cc.Node("InfoOverlay");
         this.infoOverlay.parent = this.root;
+        this.assignRenderGroup(this.infoOverlay, hudGroupIndex);
         this.infoOverlay.addComponent(cc.BlockInputEvents);
         const backdropNode = new cc.Node("Backdrop");
         backdropNode.parent = this.infoOverlay;
@@ -637,7 +672,7 @@ export default class GameBootstrap extends cc.Component {
         this.dancerBaseScale = vertical.dancerScale;
         this.stageVisible = vertical.showStage;
         this.stage.node.active = this.stageVisible;
-        this.dancerNode.active = this.stageVisible;
+        this.refreshDancerVisibility();
         this.stage.node.setPosition(contentCenterX, this.stageBaseY);
         this.dancerNode.setPosition(contentCenterX, this.stageBaseY + 3);
         this.dancerNode.scale = this.dancerBaseScale;
@@ -863,7 +898,14 @@ export default class GameBootstrap extends cc.Component {
         if (this.input) {
             this.input.resetPressed();
         }
+        this.danceFlow.reset();
+        this.clockHeldForDanceFlow = false;
+        this.heldGroupIndex = -1;
         this.gameplayActive = false;
+        if (this.dancerController) {
+            this.dancerController.setState("idle", true);
+        }
+        this.setGroupInputUiVisible(true);
         this.gameRoot.active = false;
         this.menuRoot.active = true;
         this.hideInfo();
@@ -921,6 +963,7 @@ export default class GameBootstrap extends cc.Component {
         this.infoBody.string = body;
         this.infoOverlay.active = true;
         this.infoOverlay.setSiblingIndex(this.root.childrenCount - 1);
+        this.refreshDancerVisibility();
         console.info("[GameBootstrap] overlay=" + title);
     }
 
@@ -928,6 +971,14 @@ export default class GameBootstrap extends cc.Component {
         if (this.infoOverlay) {
             this.infoOverlay.active = false;
         }
+        this.refreshDancerVisibility();
+    }
+
+    private refreshDancerVisibility(): void {
+        if (!this.dancerNode) {
+            return;
+        }
+        this.dancerNode.active = this.stageVisible && (!this.infoOverlay || !this.infoOverlay.active);
     }
 
     private restartGame(): void {
@@ -935,11 +986,16 @@ export default class GameBootstrap extends cc.Component {
             return;
         }
         this.engine.restart();
+        this.danceFlow.reset();
         this.clock.restart();
+        if (this.dancerController) {
+            this.dancerController.setState("idle", true);
+        }
         this.pausedByHost = false;
+        this.clockHeldForDanceFlow = false;
         this.heldGroupIndex = -1;
-        this.holdUntilSongTimeMs = 0;
         this.groupRenderKey = "";
+        this.setGroupInputUiVisible(true);
         this.lastResultText = "等待第一键";
         this.lastResultColor = cc.color(255, 207, 82);
         this.showTransient("准备", cc.color(255, 207, 82), 800);
@@ -954,11 +1010,16 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private onDirection(direction: Direction): void {
-        if (!this.gameplayActive || !canEnterGameplay(this.startupState) || this.clock.isPaused()) {
+        if (!this.gameplayActive || !canEnterGameplay(this.startupState)
+            || this.danceFlow.getSnapshot().inputLocked || this.clock.isPaused()) {
             return;
         }
         const songTimeMs = this.clock.currentTimeMs();
         this.presentActions(this.engine.inputDirection(direction, songTimeMs), songTimeMs);
+        if (this.danceFlow.getSnapshot().phase === "dance") {
+            this.refreshStats();
+            return;
+        }
         this.renderGroup(songTimeMs);
         this.updateNoteChips(songTimeMs);
         this.updateGlobalTimeline(songTimeMs);
@@ -970,14 +1031,6 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private presentAction(action: EngineAction, songTimeMs: number): void {
-        if (action.groupCompleted) {
-            this.heldGroupIndex = action.groupIndex;
-            this.holdUntilSongTimeMs = action.finished
-                ? Number.POSITIVE_INFINITY
-                : songTimeMs + GROUP_RESULT_HOLD_MS;
-            this.groupRenderKey = "";
-        }
-
         if (action.kind === "tooEarly") {
             this.showTransient("还没到判定窗口，请等待", cc.color(255, 210, 112), songTimeMs + 380);
         } else if (action.judgement) {
@@ -985,14 +1038,116 @@ export default class GameBootstrap extends cc.Component {
                 ? ""
                 : "  " + (action.judgement.deltaMs >= 0 ? "+" : "")
                     + Math.round(action.judgement.deltaMs) + "ms";
-            const suffix = action.finished ? " · 完成" : "";
+            const suffix = action.groupCompleted ? " · 本组完成" : "";
             this.lastResultText = GRADE_TEXT[action.judgement.grade] + timing + suffix;
             this.lastResultColor = this.judgementColor(action.judgement.grade);
             this.restoreLastResult();
         }
 
-        if (action.finished) {
-            this.instructionLabel.string = "COMPLETE / 完成 · 点击重新开始或按 R";
+        if (action.groupCompleted) {
+            this.beginGroupDance(action.groupIndex);
+        }
+    }
+
+    private beginGroupDance(completedGroupIndex: number): void {
+        const segment = this.danceFlow.beginGroupDance(completedGroupIndex);
+        this.heldGroupIndex = completedGroupIndex;
+        this.groupRenderKey = "";
+        if (this.clock.isStarted() && !this.clock.isPaused()) {
+            this.clock.pause();
+        }
+        this.clockHeldForDanceFlow = true;
+        if (this.input) {
+            this.input.resetPressed();
+        }
+        this.setGroupInputUiVisible(false);
+        if (this.dancerController) {
+            this.dancerController.setDanceSegment(
+                segment.groupIndex,
+                segment.groupCount,
+                segment.elapsedMs
+            );
+        }
+        this.instructionLabel.string = this.danceInstruction(segment);
+        this.progressLabel.string = "舞段 " + (segment.groupIndex + 1) + " / " + segment.groupCount
+            + " · 谱面与输入已暂停";
+        this.progressLabel.node.color = cc.color(255, 207, 82);
+        this.updateStage(segment.startMs);
+    }
+
+    private updateDanceInterlude(deltaSeconds: number): void {
+        const transition = this.danceFlow.update(Math.max(0, deltaSeconds) * 1000);
+        const snapshot = this.danceFlow.getSnapshot();
+        if (snapshot.segment) {
+            if (this.dancerController) {
+                this.dancerController.setDanceSegment(
+                    snapshot.segment.groupIndex,
+                    snapshot.segment.groupCount,
+                    snapshot.segment.elapsedMs
+                );
+            }
+            this.updateStage(snapshot.segment.startMs + snapshot.segment.elapsedMs);
+            this.instructionLabel.string = this.danceInstruction(snapshot.segment);
+        }
+        if (transition) {
+            this.finishDanceInterlude(transition);
+        }
+    }
+
+    private finishDanceInterlude(transition: GroupDanceTransition): void {
+        const songTimeMs = this.clock.currentTimeMs();
+        if (this.input) {
+            this.input.resetPressed();
+        }
+        if (transition.kind === "next-group") {
+            if (this.dancerController) {
+                this.dancerController.setState("idle", true);
+            }
+            this.heldGroupIndex = -1;
+            this.groupRenderKey = "";
+            this.clockHeldForDanceFlow = false;
+            this.instructionLabel.string = "方向键 / WASD · 在每个箭头的目标时刻直接输入";
+            this.progressLabel.node.color = cc.color(238, 220, 183);
+            this.setGroupInputUiVisible(true);
+            this.renderGroup(songTimeMs);
+            this.updateNoteChips(songTimeMs);
+            this.updateGlobalTimeline(songTimeMs);
+            this.refreshStats();
+            if (!this.hostSuspended && this.clock.isPaused()) {
+                this.clock.resume();
+            }
+            return;
+        }
+
+        this.clockHeldForDanceFlow = true;
+        this.setGroupInputUiVisible(false);
+        this.instructionLabel.string = "COMPLETE / 完成 · 点击重新开始或按 R";
+        if (this.dancerController) {
+            this.dancerController.setState("result", true);
+        }
+        this.updateGlobalTimeline(songTimeMs);
+        this.refreshStats();
+    }
+
+    private danceInstruction(segment: GroupDanceSegment): string {
+        const destination = segment.final ? "完成演出" : "出现下一组";
+        return "舞段 " + (segment.groupIndex + 1) + " / " + segment.groupCount
+            + " · " + Math.max(0, segment.remainingMs / 1000).toFixed(1)
+            + "s 后" + destination;
+    }
+
+    private setGroupInputUiVisible(visible: boolean): void {
+        if (this.groupPanel) {
+            this.groupPanel.node.active = visible;
+        }
+        if (this.groupLabel) {
+            this.groupLabel.node.active = visible;
+        }
+        if (this.sequenceRow) {
+            this.sequenceRow.active = visible;
+        }
+        if (this.directionPad) {
+            this.directionPad.active = visible;
         }
     }
 
@@ -1138,24 +1293,22 @@ export default class GameBootstrap extends cc.Component {
         view.miniBar.fill();
     }
 
-    private displayedGroupIndex(songTimeMs: number): number {
+    private displayedGroupIndex(_songTimeMs: number): number {
         const snapshot = this.engine.getSnapshot();
         if (this.heldGroupIndex >= 0) {
-            if (snapshot.finished || songTimeMs < this.holdUntilSongTimeMs) {
-                return this.heldGroupIndex;
-            }
-            this.heldGroupIndex = -1;
-            this.groupRenderKey = "";
+            return this.heldGroupIndex;
         }
         return Math.min(snapshot.groupIndex, snapshot.groupCount - 1);
     }
 
     private updateGlobalTimeline(songTimeMs: number): void {
         const snapshot = this.engine.getSnapshot();
-        const currentNote = this.engine.getCurrentNote();
+        const dancePhase = this.danceFlow.getSnapshot().phase;
+        const currentNote = dancePhase === "input" ? this.engine.getCurrentNote() : null;
+        const presentationFinished = snapshot.finished && dancePhase === "result";
         const width = this.globalBarWidth;
         const x = -width * 0.5;
-        const progress = snapshot.finished ? 1 : timelineProgress(songTimeMs, this.songDurationMs);
+        const progress = presentationFinished ? 1 : timelineProgress(songTimeMs, this.songDurationMs);
         const feedbackColor = snapshot.lastJudgement
             ? this.judgementColor(snapshot.lastJudgement)
             : cc.color(255, 183, 55);
@@ -1196,7 +1349,7 @@ export default class GameBootstrap extends cc.Component {
         this.globalTimeline.circle(x + width * progress, 0, 7);
         this.globalTimeline.fill();
 
-        if (snapshot.finished) {
+        if (presentationFinished) {
             this.progressLabel.string = "谱面 100% · COMPLETE / 完成";
             this.progressLabel.node.color = feedbackColor;
         } else if (currentNote) {
@@ -1212,6 +1365,13 @@ export default class GameBootstrap extends cc.Component {
 
     private updateStage(songTimeMs: number): void {
         if (!this.stageVisible) {
+            return;
+        }
+        if (this.dancerController && this.dancerController.isReady()) {
+            this.dancerNode.y = this.stageBaseY + 3;
+            this.dancerNode.rotation = 0;
+            this.dancerNode.scaleX = this.dancerBaseScale;
+            this.dancerNode.scaleY = this.dancerBaseScale;
             return;
         }
         const beatDuration = 60000 / DEMO_BEATMAP.bpm;
@@ -1298,6 +1458,17 @@ export default class GameBootstrap extends cc.Component {
             22
         );
         this.groupPanel.stroke();
+    }
+
+    private renderGroupIndex(name: string): number {
+        const groupList = (cc.game as any).groupList as string[];
+        return groupList ? groupList.indexOf(name) : -1;
+    }
+
+    private assignRenderGroup(node: cc.Node, groupIndex: number): void {
+        if (groupIndex >= 0) {
+            node.groupIndex = groupIndex;
+        }
     }
 
     private drawMenuCard(graphics: cc.Graphics, width: number, height: number): void {
@@ -1577,6 +1748,9 @@ export default class GameBootstrap extends cc.Component {
 
     private pauseForHost(): void {
         this.hostSuspended = true;
+        if (this.dancerController) {
+            this.dancerController.pause();
+        }
         if (this.input) {
             this.input.resetPressed();
         }
@@ -1594,17 +1768,32 @@ export default class GameBootstrap extends cc.Component {
             return;
         }
         this.hostSuspended = false;
+        if (this.dancerController) {
+            this.dancerController.resume();
+        }
         if (this.input) {
             this.input.resetPressed();
         }
         if (this.pausedByHost) {
-            this.clock.resume();
+            if (this.gameplayActive && !this.clockHeldForDanceFlow
+                && this.danceFlow.getSnapshot().phase === "input") {
+                this.clock.resume();
+            }
             this.pausedByHost = false;
-            this.instructionLabel.string = this.engine.getSnapshot().finished
-                ? "COMPLETE / 完成 · 点击重新开始或按 R"
-                : "方向键 / WASD · 在每个箭头的目标时刻直接输入";
         }
+        this.restoreInstructionForPhase();
         this.layout();
+    }
+
+    private restoreInstructionForPhase(): void {
+        const flow = this.danceFlow.getSnapshot();
+        if (flow.phase === "dance" && flow.segment) {
+            this.instructionLabel.string = this.danceInstruction(flow.segment);
+        } else if (flow.phase === "result") {
+            this.instructionLabel.string = "COMPLETE / 完成 · 点击重新开始或按 R";
+        } else if (this.gameplayActive) {
+            this.instructionLabel.string = "方向键 / WASD · 在每个箭头的目标时刻直接输入";
+        }
     }
 
     private onWindowBlur(): void {

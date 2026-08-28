@@ -65,6 +65,54 @@ if [ "$CONFIG_ART_COUNT" -ne 25 ]; then
   echo "error: expected texture config to contain exactly 25 runtime textures, found $CONFIG_ART_COUNT" >&2
   exit 1
 fi
+
+DANCER_DIR="$WEB_DIR/assets/dancer"
+DANCER_CONFIG="$DANCER_DIR/config.json"
+if [ ! -f "$DANCER_CONFIG" ]; then
+  echo "error: dancer runtime bundle was not built" >&2
+  exit 1
+fi
+if ! jq -e '.name == "dancer"' "$DANCER_CONFIG" >/dev/null; then
+  echo "error: dancer bundle config has the wrong bundle name" >&2
+  exit 1
+fi
+DANCER_CLIP_TYPE=$(jq -r '.types | to_entries[] | select(.value == "cc.SkeletonAnimationClip") | .key' "$DANCER_CONFIG")
+DANCER_PREFAB_TYPE=$(jq -r '.types | to_entries[] | select(.value == "cc.Prefab") | .key' "$DANCER_CONFIG")
+if [ -z "$DANCER_CLIP_TYPE" ] || [ -z "$DANCER_PREFAB_TYPE" ]; then
+  echo "error: dancer bundle must contain a Prefab and SkeletonAnimationClip assets" >&2
+  exit 1
+fi
+if jq -e '.types | index("cc.BufferAsset") != null' "$DANCER_CONFIG" >/dev/null; then
+  echo "error: dancer import-only source buffer must not enter the runtime bundle" >&2
+  exit 1
+fi
+DANCER_CLIP_COUNT=$(jq --argjson type "$DANCER_CLIP_TYPE" '[.paths[] | select(.[1] == $type)] | length' "$DANCER_CONFIG")
+DANCER_PREFAB_COUNT=$(jq --argjson type "$DANCER_PREFAB_TYPE" '[.paths[] | select(.[1] == $type)] | length' "$DANCER_CONFIG")
+if [ "$DANCER_CLIP_COUNT" -ne 3 ] || [ "$DANCER_PREFAB_COUNT" -lt 1 ]; then
+  echo "error: dancer bundle expected 1+ Prefab and exactly 3 animation clips" >&2
+  exit 1
+fi
+for ANIMATION_NAME in IdleSway DanceCombo ResultPose; do
+  if ! grep -R -q "\"$ANIMATION_NAME\"" "$DANCER_DIR/import"; then
+    echo "error: built dancer import data is missing $ANIMATION_NAME" >&2
+    exit 1
+  fi
+done
+DANCER_BYTES=$(find "$DANCER_DIR" -type f -exec stat -f '%z' {} \; | awk '{ total += $1 } END { print total + 0 }')
+DANCER_BUDGET=$((5 * 1024 * 1024))
+if [ "$DANCER_BYTES" -gt "$DANCER_BUDGET" ]; then
+  echo "error: dancer bundle exceeds the 5 MiB runtime budget ($DANCER_BYTES bytes)" >&2
+  exit 1
+fi
+if find "$WEB_DIR/assets" -type f -exec shasum -a 256 {} + \
+  | grep -q '^0ae9d0faba3c3df5a0333880cf82f2a96d7669d082de5a8c38663963d773d7de '; then
+  echo "error: dancer import-only source buffer must not enter any built bundle" >&2
+  exit 1
+fi
+if printf '%s\n' "$ZIP_LIST" | grep -Eiq '(^|/)[^/]+\.fbx$|(^|/)[^/]+\.fbm(/|$)|(^|/)Image_0\.png$'; then
+  echo "error: original FBX/FBM dancer source material must not enter the build" >&2
+  exit 1
+fi
 if printf '%s\n' "$ZIP_LIST" | grep -Eq '(^|/)design(/|$)|主界面|今日任务|游戏界面|选择歌曲|按键\.psd'; then
   echo "error: design references must not be included in the runtime bundle" >&2
   exit 1
@@ -77,4 +125,6 @@ fi
 "$PROJECT_ROOT/.builda-agent/builda" bundle-check --webview-compatible "$ZIP_PATH"
 echo "builda-verify=ok"
 echo "runtime-art-count=$CONFIG_ART_COUNT"
+echo "dancer-clips=$DANCER_CLIP_COUNT"
+echo "dancer-bundle-bytes=$DANCER_BYTES"
 echo "bundle=$ZIP_PATH"

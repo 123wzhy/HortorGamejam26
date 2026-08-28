@@ -1,4 +1,8 @@
 import { Beatmap, DEMO_BEATMAP } from "../assets/scripts/domain/Beatmap";
+import {
+    DANCE_COMBO_DURATION_MS,
+    GroupDanceFlow
+} from "../assets/scripts/gameplay/GroupDanceFlow";
 import { JudgeSystem } from "../assets/scripts/gameplay/JudgeSystem";
 import { EngineAction, SequenceEngine } from "../assets/scripts/gameplay/SequenceEngine";
 import { noteApproachProgress, timelineProgress } from "../assets/scripts/gameplay/TimingProgress";
@@ -180,6 +184,108 @@ function testLateBoundaryAndAutomaticFailure(): void {
     equal(catchUp.length, 2, "One input can first expire an old note then judge the new earliest note");
     equal(catchUp[0].reason, "expired", "Old earliest note expires first");
     equal(catchUp[1].judgement!.grade, "Perfect", "Direction input still reaches the next eligible note");
+}
+
+function testCatchUpStopsAtGroupBoundary(): void {
+    const updateEngine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    updateEngine.start();
+    const firstGroup = updateEngine.update(10000);
+    equal(firstGroup.length, 3, "One update settles only the overdue notes in the current group");
+    equal(firstGroup[2].groupCompleted, true, "Catch-up reports the current group boundary");
+    equal(updateEngine.getSnapshot().groupIndex, 1, "Catch-up advances to the next group");
+    equal(updateEngine.getSnapshot().noteIndex, 0, "Catch-up leaves the next group's first note untouched");
+    equal(updateEngine.getSnapshot().settledNoteCount, 3, "Catch-up cannot auto-Miss across a group boundary");
+
+    const inputEngine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    inputEngine.start();
+    const boundaryInput = inputEngine.inputDirection("down", 3400);
+    equal(boundaryInput.length, 3, "An input first catches up only the completed old group");
+    equal(boundaryInput[2].groupCompleted, true, "The caught-up input exposes the group boundary");
+    equal(inputEngine.getSnapshot().noteIndex, 0, "The same key cannot settle the next group's first note");
+    equal(inputEngine.getSnapshot().settledNoteCount, 3, "Boundary input consumes no next-group note");
+    const nextInput = lastAction(inputEngine.inputDirection("down", 3400));
+    equal(nextInput.judgement!.grade, "Perfect", "A later input can judge the revealed next group normally");
+}
+
+function testGroupDanceFlowSegments(): void {
+    const flow = new GroupDanceFlow(DEMO_BEATMAP.groups.length);
+    const segmentDurationMs = DANCE_COMBO_DURATION_MS / DEMO_BEATMAP.groups.length;
+    let previousEndMs = 0;
+
+    for (let groupIndex = 0; groupIndex < DEMO_BEATMAP.groups.length; groupIndex += 1) {
+        const segment = flow.beginGroupDance(groupIndex);
+        near(segment.startMs, previousEndMs, 0.000001, "Dance slices are continuous at group " + groupIndex);
+        near(
+            segment.endMs,
+            DANCE_COMBO_DURATION_MS * (groupIndex + 1) / DEMO_BEATMAP.groups.length,
+            0.000001,
+            "Dance slice uses its matching eighth"
+        );
+        near(segment.durationMs, segmentDurationMs, 0.000001, "Every group owns one eighth of DanceCombo");
+        equal(flow.getSnapshot().inputLocked, true, "Dance phase locks note input");
+        equal(flow.update(segment.durationMs - 0.01), null, "A dance slice does not finish before its boundary");
+        equal(flow.getSnapshot().phase, "dance", "The next group remains hidden within the dance slice");
+        const transition = flow.update(0.01);
+        if (!transition) {
+            throw new Error("Expected a dance transition at the exact segment boundary");
+        }
+        if (groupIndex < DEMO_BEATMAP.groups.length - 1) {
+            equal(transition.kind, "next-group", "A non-final dance returns to input");
+            equal(flow.getSnapshot().phase, "input", "Non-final boundary reveals the next input phase");
+            equal(flow.getSnapshot().inputLocked, false, "Non-final boundary unlocks input");
+        } else {
+            equal(transition.kind, "result", "Only the eighth dance enters result");
+            equal(flow.getSnapshot().phase, "result", "Final dance boundary enters result phase");
+            equal(flow.getSnapshot().inputLocked, true, "Result keeps note input locked");
+        }
+        previousEndMs = segment.endMs;
+    }
+    near(previousEndMs, DANCE_COMBO_DURATION_MS, 0.000001, "Eight slices cover DanceCombo exactly once");
+
+    flow.reset();
+    const first = flow.beginGroupDance(0);
+    const overshoot = flow.update(first.durationMs * 10);
+    equal(overshoot && overshoot.kind, "next-group", "Large dt finishes at most the active dance slice");
+    equal(flow.getSnapshot().phase, "input", "Overshoot cannot skip the next input phase");
+    flow.beginGroupDance(1);
+    flow.update(125);
+    const pausedElapsed = flow.getSnapshot().segment!.elapsedMs;
+    flow.update(0);
+    equal(flow.getSnapshot().segment!.elapsedMs, pausedElapsed, "No update means host pause consumes no dance time");
+    flow.reset();
+    equal(flow.getSnapshot().phase, "input", "Restart or home cancels an old dance slice");
+    equal(flow.update(first.durationMs), null, "A cancelled slice cannot fire a stale transition");
+}
+
+function testDanceFlowFreezesSongClockAndFutureNotes(): void {
+    let now = 0;
+    const clock = new SongClock(() => now);
+    const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
+    const flow = new GroupDanceFlow(2);
+    clock.start();
+    engine.start();
+
+    now = 1000;
+    engine.inputDirection("left", clock.currentTimeMs());
+    now = 1600;
+    engine.inputDirection("up", clock.currentTimeMs());
+    now = 2200;
+    const completed = lastAction(engine.inputDirection("right", clock.currentTimeMs()));
+    equal(completed.groupCompleted, true, "Fixture completes its first input group");
+    const frozenSongTimeMs = clock.currentTimeMs();
+    clock.pause();
+    const segment = flow.beginGroupDance(completed.groupIndex);
+
+    now += segment.durationMs;
+    const transition = flow.update(segment.durationMs);
+    equal(transition && transition.kind, "next-group", "Dance timer advances while song time is paused");
+    equal(clock.currentTimeMs(), frozenSongTimeMs, "Dance wall time is excluded from SongClock");
+    equal(engine.update(clock.currentTimeMs()).length, 0, "Frozen song time cannot auto-Miss a future note");
+    equal(engine.getSnapshot().noteIndex, 0, "The next group's first note remains pending after dance");
+
+    clock.resume();
+    now += 100;
+    equal(clock.currentTimeMs(), frozenSongTimeMs + 100, "SongClock resumes from the exact pre-dance point");
 }
 
 function testMissBreaksCombo(): void {
@@ -722,6 +828,9 @@ async function run(): Promise<void> {
     testPerNoteScoresComboAndGroupAdvance();
     testOnlyEarliestNoteCanSettle();
     testLateBoundaryAndAutomaticFailure();
+    testCatchUpStopsAtGroupBoundary();
+    testGroupDanceFlowSegments();
+    testDanceFlowFreezesSongClockAndFutureNotes();
     testMissBreaksCombo();
     testFinalTimeoutStillCompletes();
     testRestart();
@@ -734,7 +843,7 @@ async function run(): Promise<void> {
     testUiStartupRaceAndFallback();
     await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
-    console.log("logic-tests=passed cases=18");
+    console.log("logic-tests=passed cases=21");
 }
 
 run().catch((error) => {

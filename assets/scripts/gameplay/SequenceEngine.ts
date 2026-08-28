@@ -88,6 +88,9 @@ export class SequenceEngine {
 
     public inputDirection(direction: Direction, songTimeMs: number): EngineAction[] {
         const actions = this.update(songTimeMs);
+        if (actions.some((action) => action.groupCompleted)) {
+            return actions;
+        }
         if (!this.running) {
             return actions.length > 0 ? actions : [this.makeAction("ignored", false, "not-running")];
         }
@@ -120,7 +123,11 @@ export class SequenceEngine {
         const badWindow = this.judgeSystem.getWindows().badMs;
         let note = this.getCurrentNote();
         while (this.running && note && songTimeMs > note.targetTimeMs + badWindow) {
-            actions.push(this.resolve(this.judgeSystem.miss(songTimeMs - note.targetTimeMs), "expired"));
+            const action = this.resolve(this.judgeSystem.miss(songTimeMs - note.targetTimeMs), "expired");
+            actions.push(action);
+            if (action.groupCompleted) {
+                break;
+            }
             note = this.getCurrentNote();
         }
         return actions;

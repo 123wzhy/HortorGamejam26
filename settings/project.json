@@ -1,7 +1,19 @@
 {
   "collision-matrix": [
     [
-      true
+      true,
+      false,
+      false
+    ],
+    [
+      false,
+      false,
+      false
+    ],
+    [
+      false,
+      false,
+      false
     ]
   ],
   "excluded-modules": [
@@ -10,7 +22,9 @@
     "3D Particle"
   ],
   "group-list": [
-    "default"
+    "default",
+    "dancer",
+    "hud"
   ],
   "start-scene": "2d2f792f-a40c-49bb-a189-ed176a246e49",
   "design-resolution-width": 1280,
