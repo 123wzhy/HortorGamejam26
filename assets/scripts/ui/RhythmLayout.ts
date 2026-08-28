@@ -72,9 +72,11 @@ export interface MenuFooterVerticalLayoutInput {
     safeBottom: number;
     startButtonHeight: number;
     startButtonScale: number;
+    showHint: boolean;
 }
 
 export interface MenuFooterVerticalLayout {
+    hintVisible: boolean;
     hintY: number;
     startY: number;
     startButtonBottom: number;
@@ -114,6 +116,8 @@ export interface SongListVerticalLayout {
     statusTop: number;
     statusBottom: number;
 }
+
+export const MINIMUM_MENU_CARD_HEIGHT = 184;
 
 function finiteOr(value: number, fallback: number): number {
     return isFinite(value) ? value : fallback;
@@ -202,8 +206,11 @@ export function calculateMenuFooterVerticalLayout(
     const statusLabelHeight = 32;
     const buttonStatusGap = 10;
     const statusCardGap = 12;
+    const hintVisible = !!input.showHint;
     const hintY = -viewportHeight * 0.5 + safeBottom + 40;
-    const startButtonBottom = hintY + 50;
+    const startButtonBottom = hintVisible
+        ? hintY + 50
+        : -viewportHeight * 0.5 + safeBottom + 12;
     const startY = startButtonBottom + startButtonHeight * 0.5;
     const startButtonTop = startButtonBottom + startButtonHeight;
     const statusBottom = startButtonTop + buttonStatusGap;
@@ -212,6 +219,7 @@ export function calculateMenuFooterVerticalLayout(
     const cardBottom = statusTop + statusCardGap;
 
     return {
+        hintVisible,
         hintY,
         startY,
         startButtonBottom,
@@ -238,7 +246,7 @@ export function calculateMenuCardVerticalLayout(
     const cardBottom = finiteOr(input.cardBottom, 0);
     const preferredCardHeight = Math.max(0, finiteOr(input.preferredCardHeight, 0));
     const maximumCardHeight = Math.max(0, finiteOr(input.maximumCardHeight, 0));
-    const minimumReadableHeight = 96;
+    const minimumReadableHeight = MINIMUM_MENU_CARD_HEIGHT;
     const logoCardGap = 8;
     const maximumCardTop = logoBottom - logoCardGap;
     const availableCardHeight = Math.max(0, maximumCardTop - cardBottom);
@@ -263,7 +271,7 @@ export function calculateSongListVerticalLayout(
     cardHeightInput: number,
     rowCountInput: number
 ): SongListVerticalLayout {
-    const cardHeight = Math.max(96, finiteOr(cardHeightInput, 184));
+    const cardHeight = Math.max(1, finiteOr(cardHeightInput, MINIMUM_MENU_CARD_HEIGHT));
     const rowCount = Math.max(1, Math.floor(finiteOr(rowCountInput, 1)));
     const statusHeight = clamp(cardHeight * 0.105, 18, 24);
     const statusBottom = -cardHeight * 0.5 + Math.max(8, cardHeight * 0.05);
@@ -273,7 +281,7 @@ export function calculateSongListVerticalLayout(
     const listBottom = statusTop + 6;
     const rowGap = clamp(cardHeight * 0.025, 3, 6);
     const availableHeight = Math.max(1, listTop - listBottom - rowGap * (rowCount - 1));
-    const rowHeight = clamp(availableHeight / rowCount, 30, 52);
+    const rowHeight = Math.min(52, availableHeight / rowCount);
     const rowCenters: number[] = [];
     for (let index = 0; index < rowCount; index += 1) {
         rowCenters.push(listTop - rowHeight * 0.5 - index * (rowHeight + rowGap));
