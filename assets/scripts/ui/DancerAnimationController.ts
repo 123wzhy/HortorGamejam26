@@ -1,3 +1,5 @@
+import { DancerClipName, SongAnimationProfile } from "../domain/SongCatalog";
+
 export type DancerAnimationState = "idle" | "dance" | "result";
 
 const BUNDLE_NAME = "dancer";
@@ -8,10 +10,24 @@ const MODEL_SCALE = 216;
 const MODEL_Y_OFFSET = -311;
 const JOINT_MATRIX_FLOAT_COUNT = 54 * 16;
 
-const STATE_CLIPS: { [key: string]: string } = {
-    idle: "IdleSway",
-    dance: "DanceCombo",
-    result: "ResultPose"
+const REQUIRED_CLIPS: DancerClipName[] = [
+    "IdleSway",
+    "IdleSway0",
+    "DanceCombo",
+    "DanceCombo2",
+    "ResultPose",
+    "ResultPose2",
+    "ResultPose3"
+];
+const DANCE_CLIPS: DancerClipName[] = ["DanceCombo", "DanceCombo2"];
+const SUCCESS_RESULT_CLIPS: DancerClipName[] = ["ResultPose", "ResultPose2"];
+const FAILURE_RESULT_CLIPS: DancerClipName[] = ["ResultPose3"];
+
+const DEFAULT_ANIMATION_PROFILE: SongAnimationProfile = {
+    danceClip: "DanceCombo",
+    successResultClip: "ResultPose",
+    failureResultClip: "ResultPose3",
+    danceDurationMs: 26800.00114440918
 };
 
 /**
@@ -31,11 +47,15 @@ export class DancerAnimationController {
     private renderer: cc.SkinnedMeshRenderer | null = null;
     private animation: cc.SkeletonAnimation | null = null;
     private clips: { [key: string]: cc.SkeletonAnimationClip } = {};
+    private animationProfile: SongAnimationProfile = DEFAULT_ANIMATION_PROFILE;
     private desiredState: DancerAnimationState = "idle";
+    private desiredIdleClip: "IdleSway" | "IdleSway0" = "IdleSway";
+    private desiredResultPassed: boolean = true;
     private desiredDanceGroupIndex: number = 0;
     private desiredDanceGroupCount: number = 1;
     private desiredDanceElapsedMs: number = 0;
     private playingDanceSegmentKey: string = "";
+    private playingClipName: string = "";
     private playingState: DancerAnimationState | null = null;
     private initStarted: boolean = false;
     private loadFailed: boolean = false;
@@ -105,9 +125,65 @@ export class DancerAnimationController {
         if (this.disposed) {
             return;
         }
+        if (state === "idle") {
+            this.setIdleClip("IdleSway", restart);
+            return;
+        }
         const changed = this.desiredState !== state;
+        const resultChanged = state === "result" && !this.desiredResultPassed;
         this.desiredState = state;
-        if (this.ready && (changed || restart || this.playingState === null)) {
+        if (state === "result") {
+            this.desiredResultPassed = true;
+        }
+        if (this.ready && (changed || resultChanged || restart || this.playingState === null)) {
+            this.applyDesiredState();
+        }
+    }
+
+    /** Uses the original loop on menus; this is also the legacy idle default. */
+    public setMenuIdle(restart: boolean = false): void {
+        this.setIdleClip("IdleSway", restart);
+    }
+
+    /** Uses the gameplay waiting loop after start, restart, and between groups. */
+    public setGameplayIdle(restart: boolean = false): void {
+        this.setIdleClip("IdleSway0", restart);
+    }
+
+    /**
+     * Selects the clips owned by one song. The default remains the original
+     * DanceCombo / ResultPose pair, so existing callers preserve first-song
+     * behaviour until they explicitly choose another profile.
+     */
+    public setAnimationProfile(profile: SongAnimationProfile, restart: boolean = false): void {
+        if (this.disposed || !this.isValidProfile(profile)) {
+            return;
+        }
+        const changed = this.animationProfile.danceClip !== profile.danceClip
+            || this.animationProfile.successResultClip !== profile.successResultClip
+            || this.animationProfile.failureResultClip !== profile.failureResultClip
+            || this.animationProfile.danceDurationMs !== profile.danceDurationMs;
+        this.animationProfile = {
+            danceClip: profile.danceClip,
+            successResultClip: profile.successResultClip,
+            failureResultClip: profile.failureResultClip,
+            danceDurationMs: profile.danceDurationMs
+        };
+        if (this.ready && this.desiredState !== "idle" && (changed || restart)) {
+            this.applyDesiredState();
+        }
+    }
+
+    /** Selects the song-specific success pose or the shared failure pose. */
+    public setResult(passed: boolean, restart: boolean = true): void {
+        if (this.disposed) {
+            return;
+        }
+        const stateChanged = this.desiredState !== "result";
+        const resultChanged = this.desiredResultPassed !== passed;
+        this.desiredState = "result";
+        this.desiredResultPassed = passed;
+        if (this.ready && (stateChanged || resultChanged || restart || this.playingState === null)) {
             this.applyDesiredState();
         }
     }
@@ -122,7 +198,7 @@ export class DancerAnimationController {
             || groupCount <= 0 || groupIndex < 0 || groupIndex >= groupCount) {
             return;
         }
-        const segmentKey = groupIndex + "/" + groupCount;
+        const segmentKey = this.animationProfile.danceClip + ":" + groupIndex + "/" + groupCount;
         const segmentChanged = groupIndex !== this.desiredDanceGroupIndex
             || groupCount !== this.desiredDanceGroupCount;
         const stateChanged = this.desiredState !== "dance";
@@ -280,8 +356,7 @@ export class DancerAnimationController {
         loadedClips.forEach((clip) => {
             clipsByName[this.normalizedAssetName(clip.name)] = clip;
         });
-        const missingClips = Object.keys(STATE_CLIPS).map((state) => STATE_CLIPS[state])
-            .filter((name) => !clipsByName[name]);
+        const missingClips = REQUIRED_CLIPS.filter((name) => !clipsByName[name]);
         if (missingClips.length > 0) {
             this.rollbackToFallback(
                 "[DancerAnimationController] dancer clips are missing: " + missingClips.join(", ")
@@ -341,8 +416,7 @@ export class DancerAnimationController {
         this.animation = animation;
         this.clips = clipsByName;
         try {
-            Object.keys(STATE_CLIPS).forEach((state) => {
-                const clipName = STATE_CLIPS[state];
+            REQUIRED_CLIPS.forEach((clipName) => {
                 animation.addClip(clipsByName[clipName], clipName);
             });
         } catch (error) {
@@ -530,7 +604,7 @@ export class DancerAnimationController {
             );
             return false;
         }
-        const clipName = STATE_CLIPS[this.desiredState];
+        const clipName = this.desiredClipName();
         try {
             const state = this.animation.getAnimationState(clipName);
             if (!state) {
@@ -559,8 +633,9 @@ export class DancerAnimationController {
                 this.animation.sample(clipName);
             }
             this.playingState = this.desiredState;
+            this.playingClipName = clipName;
             this.playingDanceSegmentKey = this.desiredState === "dance"
-                ? this.desiredDanceGroupIndex + "/" + this.desiredDanceGroupCount
+                ? clipName + ":" + this.desiredDanceGroupIndex + "/" + this.desiredDanceGroupCount
                 : "";
             if (this.desiredState === "result") {
                 this.animation.on("finished", this.onAnimationFinished, this);
@@ -585,7 +660,10 @@ export class DancerAnimationController {
         }
         try {
             this.animation.off("finished", this.onAnimationFinished, this);
-            const clipName = STATE_CLIPS.result;
+            const clipName = this.desiredClipName();
+            if (this.playingClipName !== clipName) {
+                return;
+            }
             const clip = this.clips[clipName];
             if (clip && cc.isValid(this.animation.node)) {
                 this.animation.setCurrentTime(clip.duration, clipName);
@@ -603,6 +681,42 @@ export class DancerAnimationController {
 
     private normalizedAssetName(name: string): string {
         return (name || "").replace(/\.(prefab|sac)$/i, "");
+    }
+
+    private desiredClipName(): DancerClipName {
+        if (this.desiredState === "idle") {
+            return this.desiredIdleClip;
+        }
+        if (this.desiredState === "dance") {
+            return this.animationProfile.danceClip;
+        }
+        return this.desiredResultPassed
+            ? this.animationProfile.successResultClip
+            : this.animationProfile.failureResultClip;
+    }
+
+    private setIdleClip(clipName: "IdleSway" | "IdleSway0", restart: boolean): void {
+        if (this.disposed) {
+            return;
+        }
+        const stateChanged = this.desiredState !== "idle";
+        const clipChanged = this.desiredIdleClip !== clipName;
+        this.desiredState = "idle";
+        this.desiredIdleClip = clipName;
+        if (this.ready && (stateChanged || clipChanged || restart || this.playingState === null)) {
+            this.applyDesiredState();
+        }
+    }
+
+    private isValidProfile(profile: SongAnimationProfile): boolean {
+        if (!profile || DANCE_CLIPS.indexOf(profile.danceClip) < 0
+            || SUCCESS_RESULT_CLIPS.indexOf(profile.successResultClip) < 0
+            || FAILURE_RESULT_CLIPS.indexOf(profile.failureResultClip) < 0
+            || !isFinite(profile.danceDurationMs) || profile.danceDurationMs <= 0) {
+            console.warn("[DancerAnimationController] invalid song animation profile ignored");
+            return false;
+        }
+        return true;
     }
 
     private rollbackToFallback(message: string, detail?: any): void {
@@ -669,6 +783,7 @@ export class DancerAnimationController {
         this.animation = null;
         this.clips = {};
         this.playingState = null;
+        this.playingClipName = "";
         this.playingDanceSegmentKey = "";
         this.resultHeldAtEnd = false;
         const fallback = this.fallback;

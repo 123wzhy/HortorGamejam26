@@ -88,16 +88,17 @@ if jq -e '.types | index("cc.BufferAsset") != null' "$DANCER_CONFIG" >/dev/null;
 fi
 DANCER_CLIP_COUNT=$(jq --argjson type "$DANCER_CLIP_TYPE" '[.paths[] | select(.[1] == $type)] | length' "$DANCER_CONFIG")
 DANCER_PREFAB_COUNT=$(jq --argjson type "$DANCER_PREFAB_TYPE" '[.paths[] | select(.[1] == $type)] | length' "$DANCER_CONFIG")
-if [ "$DANCER_CLIP_COUNT" -ne 3 ] || [ "$DANCER_PREFAB_COUNT" -lt 1 ]; then
-  echo "error: dancer bundle expected 1+ Prefab and exactly 3 animation clips" >&2
+if [ "$DANCER_CLIP_COUNT" -ne 7 ] || [ "$DANCER_PREFAB_COUNT" -lt 1 ]; then
+  echo "error: dancer bundle expected 1+ Prefab and exactly 7 animation clips" >&2
   exit 1
 fi
-for ANIMATION_NAME in IdleSway DanceCombo ResultPose; do
+for ANIMATION_NAME in IdleSway IdleSway0 DanceCombo DanceCombo2 ResultPose ResultPose2 ResultPose3; do
   if ! grep -R -q "\"$ANIMATION_NAME\"" "$DANCER_DIR/import"; then
     echo "error: built dancer import data is missing $ANIMATION_NAME" >&2
     exit 1
   fi
 done
+node "$PROJECT_ROOT/tools/verify-dancer-assets.mjs" "$DANCER_DIR"
 DANCER_BYTES=$(find "$DANCER_DIR" -type f -exec stat -f '%z' {} \; | awk '{ total += $1 } END { print total + 0 }')
 DANCER_BUDGET=$((5 * 1024 * 1024))
 if [ "$DANCER_BYTES" -gt "$DANCER_BUDGET" ]; then
