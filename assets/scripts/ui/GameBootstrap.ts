@@ -172,6 +172,8 @@ export default class GameBootstrap extends cc.Component {
     private menuSongTitle: cc.Label = null;
     private menuSongRowsRoot: cc.Node = null;
     private menuSongRows: SongRowView[] = [];
+    private songRowIdleRuntimeFrame: cc.SpriteFrame | null = null;
+    private songRowSelectedRuntimeFrame: cc.SpriteFrame | null = null;
     private menuSongStatusLabel: cc.Label = null;
     private menuHintRow: cc.Node = null;
     private menuHintPanel: SlicedPanelView = null;
@@ -335,7 +337,7 @@ export default class GameBootstrap extends cc.Component {
         this.applySlicedPanelFrame(this.timingPanel, this.art.get("stonePanel"));
         this.applyArtworkFrame(this.menuTaskArtwork, this.art.get("todayTaskPanel"));
         this.applyArtworkFrame(this.menuSongArtwork, this.art.get("songSelectPanel"));
-        this.menuSongRows.forEach((view) => this.bindSongRowBackgroundFrames(view));
+        this.bindSongRowBackgroundFrames();
         this.refreshSongRows();
         this.groupRenderKey = "";
     }
@@ -554,6 +556,7 @@ export default class GameBootstrap extends cc.Component {
             11,
             cc.color(238, 220, 183)
         );
+        this.bindSongRowBackgroundFrames();
         this.enforceSongPanelLayerOrder();
         this.refreshSongRows();
 
@@ -1193,13 +1196,54 @@ export default class GameBootstrap extends cc.Component {
             stars,
             songIndex
         };
-        this.bindSongRowBackgroundFrames(view);
         return view;
     }
 
-    private bindSongRowBackgroundFrames(view: SongRowView): void {
-        view.idleBackground.spriteFrame = this.art.get("songRowIdle");
-        view.selectedBackground.spriteFrame = this.art.get("songRowSelected");
+    private bindSongRowBackgroundFrames(): void {
+        if (!this.songRowIdleRuntimeFrame) {
+            this.songRowIdleRuntimeFrame = this.createRuntimeSongRowFrame(this.art.get("songRowIdle"));
+        }
+        if (!this.songRowSelectedRuntimeFrame) {
+            this.songRowSelectedRuntimeFrame = this.createRuntimeSongRowFrame(
+                this.art.get("songRowSelected")
+            );
+        }
+        this.menuSongRows.forEach((view) => {
+            view.idleBackground.spriteFrame = this.songRowIdleRuntimeFrame;
+            view.selectedBackground.spriteFrame = this.songRowSelectedRuntimeFrame;
+        });
+    }
+
+    private createRuntimeSongRowFrame(source: cc.SpriteFrame | null): cc.SpriteFrame | null {
+        if (!source) {
+            return null;
+        }
+        const runtimeFrame = source.clone();
+        const sourceRect = source.getRect();
+        const croppedHeight = Math.min(148, sourceRect.height);
+        const verticalCrop = Math.max(0, Math.floor((sourceRect.height - croppedHeight) * 0.5));
+        const croppedRect = cc.rect(
+            sourceRect.x,
+            sourceRect.y + verticalCrop,
+            sourceRect.width,
+            croppedHeight
+        );
+        runtimeFrame.setRect(croppedRect);
+        runtimeFrame.setOriginalSize(cc.size(croppedRect.width, croppedRect.height));
+        runtimeFrame.setOffset(cc.v2(0, 0));
+
+        // These row PNGs have about 52 px of transparent padding above and
+        // below their visible body. Creator 2.4.9 collapses the sliced center
+        // when node height is smaller than insetTop + insetBottom, leaving
+        // only those transparent caps. Keep the source asset untouched and
+        // tighten a runtime clone so even a 34 px row retains an 18 px center.
+        const verticalInset = Math.min(8, Math.max(0, Math.floor((croppedRect.height - 1) * 0.5)));
+        const maximumHorizontalInset = Math.max(0, Math.floor((croppedRect.width - 1) * 0.5));
+        runtimeFrame.insetLeft = Math.min(source.insetLeft, maximumHorizontalInset);
+        runtimeFrame.insetRight = Math.min(source.insetRight, maximumHorizontalInset);
+        runtimeFrame.insetTop = verticalInset;
+        runtimeFrame.insetBottom = verticalInset;
+        return runtimeFrame;
     }
 
     private enforceSongPanelLayerOrder(): void {
