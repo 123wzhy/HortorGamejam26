@@ -1,5 +1,10 @@
 import { Beatmap, DEMO_BEATMAP } from "../assets/scripts/domain/Beatmap";
 import {
+    LOCAL_LEADERBOARD_KEY,
+    LocalLeaderboard,
+    LocalLeaderboardStorage
+} from "../assets/scripts/domain/LocalLeaderboard";
+import {
     DANCE_COMBO_DURATION_MS,
     GroupDanceFlow
 } from "../assets/scripts/gameplay/GroupDanceFlow";
@@ -37,6 +42,26 @@ function equal<T>(actual: T, expected: T, message: string): void {
 function near(actual: number, expected: number, tolerance: number, message: string): void {
     if (Math.abs(actual - expected) > tolerance) {
         throw new Error(message + " (expected near " + expected + ", got " + actual + ")");
+    }
+}
+
+class MemoryLeaderboardStorage implements LocalLeaderboardStorage {
+    private readonly values: { [key: string]: string } = {};
+    public writeCount: number = 0;
+    public lastWrittenKey: string = "";
+
+    public getItem(key: string): string | null {
+        return Object.prototype.hasOwnProperty.call(this.values, key) ? this.values[key] : null;
+    }
+
+    public setItem(key: string, value: string): void {
+        this.values[key] = value;
+        this.writeCount += 1;
+        this.lastWrittenKey = key;
+    }
+
+    public seed(key: string, value: string): void {
+        this.values[key] = value;
     }
 }
 
@@ -286,6 +311,166 @@ function testDanceFlowFreezesSongClockAndFutureNotes(): void {
     clock.resume();
     now += 100;
     equal(clock.currentTimeMs(), frozenSongTimeMs + 100, "SongClock resumes from the exact pre-dance point");
+}
+
+function testLocalLeaderboardOrdering(): void {
+    const leaderboard = new LocalLeaderboard(null);
+    leaderboard.record({ score: 100, maxCombo: 99, completedAt: 1 });
+    leaderboard.record({ score: 200, maxCombo: 1, completedAt: 5000 });
+    leaderboard.record({ score: 200, maxCombo: 2, completedAt: 5000 });
+    leaderboard.record({ score: 200, maxCombo: 2, completedAt: 1000 });
+    leaderboard.record({ score: 200, maxCombo: 2, completedAt: 1000 });
+
+    const snapshot = leaderboard.getSnapshot();
+    equal(
+        snapshot.entries.map((entry) => entry.order).join(","),
+        "4,5,3,2,1",
+        "Local ranking sorts by score, combo, earlier completion, then stable order"
+    );
+    equal(snapshot.latest!.rank, 2, "Stable order gives the later identical result the second tied rank");
+    equal(snapshot.latest!.retained, true, "A top-ten latest result remains in the ranking");
+    equal(
+        snapshot.persistenceIssue,
+        "storage-unavailable",
+        "Missing storage is explicit while the in-memory ranking remains usable"
+    );
+}
+
+function testLocalLeaderboardTopTenTruncation(): void {
+    const storage = new MemoryLeaderboardStorage();
+    const leaderboard = new LocalLeaderboard(storage);
+    for (let index = 0; index < 10; index += 1) {
+        leaderboard.record({ score: 100 - index, maxCombo: index, completedAt: 1000 + index });
+    }
+    const outside = leaderboard.record({ score: 0, maxCombo: 0, completedAt: 2000 });
+    const secondOutside = leaderboard.record({ score: 1, maxCombo: 0, completedAt: 2001 });
+    const snapshot = leaderboard.getSnapshot();
+
+    equal(snapshot.entries.length, 10, "Local ranking retains exactly ten entries");
+    equal(snapshot.entries[0].score, 100, "Truncation preserves the highest score");
+    equal(snapshot.entries[9].score, 91, "Truncation preserves the tenth score");
+    equal(outside.rank, null, "An unretained result exposes no false exact rank");
+    equal(outside.retained, false, "The eleventh result is not retained in the top ten");
+    equal(secondOutside.rank, null, "Repeated unretained results still expose no exact rank");
+    equal(secondOutside.retained, false, "Repeated low results remain outside the top ten");
+    equal(snapshot.latest!.entry.score, 1, "Latest completion summary survives outside the top ten");
+
+    const reloaded = new LocalLeaderboard(storage).getSnapshot();
+    equal(reloaded.entries.length, 10, "Reload keeps the persisted table truncated to ten entries");
+    equal(reloaded.latest!.rank, null, "Reload does not invent an unretained latest result's rank");
+    equal(reloaded.latest!.retained, false, "Reload keeps the latest result outside the retained table");
+}
+
+function testLocalLeaderboardPersistenceAndReload(): void {
+    const storage = new MemoryLeaderboardStorage();
+    const oldKey = "local_leaderboard_v1";
+    storage.seed(oldKey, "legacy-data-must-remain-untouched");
+    const leaderboard = new LocalLeaderboard(storage);
+    leaderboard.record({ score: 500, maxCombo: 3, completedAt: 2000 });
+    leaderboard.record({ score: 750, maxCombo: 4, completedAt: 3000 });
+
+    equal(
+        LOCAL_LEADERBOARD_KEY,
+        "hortor_gamejam26_local_leaderboard_v1",
+        "Leaderboard uses the fixed project-scoped safe storage key"
+    );
+    equal(
+        /^[A-Za-z0-9_-]{1,64}$/.test(LOCAL_LEADERBOARD_KEY),
+        true,
+        "Project-scoped storage key stays within the safe identifier contract"
+    );
+    equal(storage.lastWrittenKey, LOCAL_LEADERBOARD_KEY, "Leaderboard writes only the project-scoped storage key");
+    equal(
+        storage.getItem(oldKey),
+        "legacy-data-must-remain-untouched",
+        "The unreleased generic key is not migrated or deleted"
+    );
+    const raw = storage.getItem(LOCAL_LEADERBOARD_KEY);
+    if (!raw) {
+        throw new Error("Expected persisted local leaderboard JSON");
+    }
+    const payload = JSON.parse(raw);
+    equal(payload.entries[0].score, 750, "Persisted entry keeps score");
+    equal(payload.entries[0].maxCombo, 4, "Persisted entry keeps max combo");
+    equal(payload.entries[0].completedAt, 3000, "Persisted entry keeps completion time");
+    equal(payload.entries[0].order, 2, "Persisted entry keeps stable order");
+
+    const reloaded = new LocalLeaderboard(storage);
+    const snapshot = reloaded.getSnapshot();
+    equal(snapshot.persistenceIssue, null, "Valid persisted data reloads without a warning");
+    equal(snapshot.entries.map((entry) => entry.score).join(","), "750,500", "Reload restores sorted entries");
+    equal(snapshot.latest!.entry.order, 2, "Reload restores the latest completed run");
+    equal(snapshot.latest!.rank, 1, "Reload restores the latest completed run's rank");
+
+    const continued = reloaded.record({ score: 600, maxCombo: 8, completedAt: 4000 });
+    equal(continued.entry.order, 3, "Reload continues the stable order sequence");
+    equal(continued.rank, 2, "Reloaded entries participate in later ranking");
+    equal(storage.writeCount, 3, "Each complete result produces one storage write");
+}
+
+function testLocalLeaderboardMalformedJsonRecovery(): void {
+    const storage = new MemoryLeaderboardStorage();
+    storage.seed(LOCAL_LEADERBOARD_KEY, "{not-json");
+    const leaderboard = new LocalLeaderboard(storage);
+    equal(
+        leaderboard.getSnapshot().persistenceIssue,
+        "storage-data-corrupt",
+        "Malformed leaderboard JSON switches to explicit memory-only mode"
+    );
+    leaderboard.record({ score: 321, maxCombo: 2, completedAt: 1234 });
+    equal(leaderboard.getSnapshot().entries[0].score, 321, "Malformed JSON cannot block session ranking");
+    equal(storage.getItem(LOCAL_LEADERBOARD_KEY), "{not-json", "Corrupt stored bytes are not silently overwritten");
+}
+
+function testLocalLeaderboardInvalidDataRecovery(): void {
+    const storage = new MemoryLeaderboardStorage();
+    storage.seed(LOCAL_LEADERBOARD_KEY, JSON.stringify({
+        version: 1,
+        nextOrder: 2,
+        entries: [{ score: -1, maxCombo: 2, completedAt: 1000, order: 1 }],
+        latestCompleted: null
+    }));
+    const leaderboard = new LocalLeaderboard(storage);
+    equal(
+        leaderboard.getSnapshot().persistenceIssue,
+        "storage-data-corrupt",
+        "Invalid leaderboard fields switch to explicit memory-only mode"
+    );
+    leaderboard.record({ score: 222, maxCombo: 1, completedAt: 2000 });
+    equal(leaderboard.getSnapshot().entries.length, 1, "Invalid stored fields recover to a clean session ranking");
+}
+
+function testLocalLeaderboardStorageExceptionFallback(): void {
+    const readFailure: LocalLeaderboardStorage = {
+        getItem: () => {
+            throw new Error("read denied");
+        },
+        setItem: () => {
+            throw new Error("unexpected write");
+        }
+    };
+    const readFallback = new LocalLeaderboard(readFailure);
+    readFallback.record({ score: 100, maxCombo: 1, completedAt: 1000 });
+    equal(
+        readFallback.getSnapshot().persistenceIssue,
+        "storage-read-failed",
+        "A storage read exception switches to memory-only mode"
+    );
+    equal(readFallback.getSnapshot().entries.length, 1, "Read failure cannot block session ranking");
+
+    const writeFailure: LocalLeaderboardStorage = {
+        getItem: () => null,
+        setItem: () => {
+            throw new Error("quota denied");
+        }
+    };
+    const writeFallback = new LocalLeaderboard(writeFailure);
+    writeFallback.record({ score: 200, maxCombo: 2, completedAt: 2000 });
+    writeFallback.record({ score: 300, maxCombo: 3, completedAt: 3000 });
+    const snapshot = writeFallback.getSnapshot();
+    equal(snapshot.persistenceIssue, "storage-write-failed", "A storage write exception is explicit");
+    equal(snapshot.entries.length, 2, "Write failure cannot block later session results");
+    equal(snapshot.entries[0].score, 300, "Memory-only fallback keeps sorting later session results");
 }
 
 function testMissBreaksCombo(): void {
@@ -831,6 +1016,12 @@ async function run(): Promise<void> {
     testCatchUpStopsAtGroupBoundary();
     testGroupDanceFlowSegments();
     testDanceFlowFreezesSongClockAndFutureNotes();
+    testLocalLeaderboardOrdering();
+    testLocalLeaderboardTopTenTruncation();
+    testLocalLeaderboardPersistenceAndReload();
+    testLocalLeaderboardMalformedJsonRecovery();
+    testLocalLeaderboardInvalidDataRecovery();
+    testLocalLeaderboardStorageExceptionFallback();
     testMissBreaksCombo();
     testFinalTimeoutStillCompletes();
     testRestart();
@@ -843,7 +1034,7 @@ async function run(): Promise<void> {
     testUiStartupRaceAndFallback();
     await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
-    console.log("logic-tests=passed cases=21");
+    console.log("logic-tests=passed cases=27");
 }
 
 run().catch((error) => {

@@ -1,5 +1,10 @@
 import { DEMO_BEATMAP, Direction } from "../domain/Beatmap";
 import {
+    LocalLeaderboard,
+    LocalLeaderboardPersistenceIssue,
+    LocalLeaderboardStorage
+} from "../domain/LocalLeaderboard";
+import {
     GroupDanceFlow,
     GroupDanceSegment,
     GroupDanceTransition
@@ -49,6 +54,20 @@ const DEMO_NOTE_COUNT = DEMO_BEATMAP.groups.reduce((count, group) => count + gro
 const SMALL_ARROW_ASPECT = 73 / 71;
 const TOUCH_ARROW_ASPECT = 142 / 146;
 
+function browserLocalLeaderboardStorage(): LocalLeaderboardStorage | null {
+    try {
+        if (typeof window === "undefined" || !window.localStorage) {
+            return null;
+        }
+        const storage = window.localStorage;
+        return typeof storage.getItem === "function" && typeof storage.setItem === "function"
+            ? storage
+            : null;
+    } catch (_error) {
+        return null;
+    }
+}
+
 const DIRECTION_ART: { [key: string]: ArtAssetName } = {
     left: "leftArrow",
     down: "downArrow",
@@ -82,6 +101,7 @@ export default class GameBootstrap extends cc.Component {
     private readonly judge: JudgeSystem = new JudgeSystem();
     private readonly engine: SequenceEngine = new SequenceEngine(DEMO_BEATMAP, this.judge);
     private readonly danceFlow: GroupDanceFlow = new GroupDanceFlow(DEMO_BEATMAP.groups.length);
+    private readonly leaderboard: LocalLeaderboard = new LocalLeaderboard(browserLocalLeaderboardStorage());
     private readonly songDurationMs: number =
         DEMO_BEATMAP.groups[DEMO_BEATMAP.groups.length - 1].notes.slice(-1)[0].targetTimeMs
         + DEFAULT_JUDGE_WINDOWS.badMs;
@@ -158,6 +178,7 @@ export default class GameBootstrap extends cc.Component {
     private pausedByHost: boolean = false;
     private clockHeldForDanceFlow: boolean = false;
     private hostSuspended: boolean = false;
+    private completionRecordedForRun: boolean = false;
     private groupRenderKey: string = "";
     private heldGroupIndex: number = -1;
     private lastResultText: string = "等待第一键";
@@ -242,7 +263,7 @@ export default class GameBootstrap extends cc.Component {
 
     private applyLoadedArt(): void {
         this.backgroundSprite.spriteFrame = this.art.get("BackGround");
-        this.applySpriteFrame(this.menuLogo, this.art.get("menuLogo"));
+        this.applySpriteFrame(this.menuLogo, this.art.get("logo"));
         this.applySpriteFrame(this.gameLogo, this.art.get("logo"));
         this.applyButtonFrame(this.menuStartButton, this.art.get("startBtn"));
         ["settingBtn", "rankBtn", "helpBtn"].forEach((name, index) => {
@@ -359,10 +380,10 @@ export default class GameBootstrap extends cc.Component {
         this.menuLogo = this.makeSpriteNode(
             this.menuRoot,
             "MenuLogo",
-            this.art.get("menuLogo"),
+            this.art.get("logo"),
             420,
-            280,
-            "牛来"
+            420 * 214 / 320,
+            "劲舞牛"
         );
         this.gameLogo = this.makeSpriteNode(this.gameRoot, "GameLogo", this.art.get("logo"), 320, 214, "牛来");
         this.menuTopButtons = [
@@ -938,14 +959,26 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private showRankInfo(): void {
-        const snapshot = this.engine.getSnapshot();
-        this.showInfo(
-            "本局成绩",
-            "当前得分：" + snapshot.score + "\n"
-            + "最高连击：" + snapshot.maxCombo + "\n"
-            + "已完成舞步：" + snapshot.settledNoteCount + " / " + snapshot.totalNoteCount + "\n\n"
-            + "平台排行榜尚未配置，因此这里不会伪造全服名次。"
-        );
+        const snapshot = this.leaderboard.getSnapshot();
+        const lines: string[] = ["仅统计本设备完整结算的成绩，不代表平台排名。", ""];
+        if (snapshot.entries.length === 0) {
+            lines.push("暂无完整结算记录。", "完成全部 8 组舞步与最终舞段后才会入榜。");
+        } else {
+            snapshot.entries.slice(0, 5).forEach((entry, index) => {
+                lines.push("#" + (index + 1) + "  " + entry.score + " 分 · 最高连击 " + entry.maxCombo);
+            });
+        }
+        if (snapshot.latest) {
+            const latestText = snapshot.latest.retained && snapshot.latest.rank !== null
+                ? "第 " + snapshot.latest.rank + " 名"
+                : "未进入前 10";
+            lines.push("", "最近完整结算：" + latestText);
+        }
+        const persistenceNotice = this.leaderboardPersistenceNotice(snapshot.persistenceIssue);
+        if (persistenceNotice) {
+            lines.push("", persistenceNotice);
+        }
+        this.showInfo("本地排行榜", lines.join("\n"));
     }
 
     private showHelp(): void {
@@ -987,6 +1020,7 @@ export default class GameBootstrap extends cc.Component {
         }
         this.engine.restart();
         this.danceFlow.reset();
+        this.completionRecordedForRun = false;
         this.clock.restart();
         if (this.dancerController) {
             this.dancerController.setState("idle", true);
@@ -1121,12 +1155,43 @@ export default class GameBootstrap extends cc.Component {
 
         this.clockHeldForDanceFlow = true;
         this.setGroupInputUiVisible(false);
+        this.recordCompletedRun();
         this.instructionLabel.string = "COMPLETE / 完成 · 点击重新开始或按 R";
         if (this.dancerController) {
             this.dancerController.setState("result", true);
         }
         this.updateGlobalTimeline(songTimeMs);
         this.refreshStats();
+    }
+
+    private recordCompletedRun(): void {
+        if (this.completionRecordedForRun || this.danceFlow.getSnapshot().phase !== "result") {
+            return;
+        }
+        this.completionRecordedForRun = true;
+        const snapshot = this.engine.getSnapshot();
+        if (!snapshot.finished) {
+            console.warn("[GameBootstrap] ignored leaderboard record before engine completion");
+            return;
+        }
+        const result = this.leaderboard.record({
+            score: snapshot.score,
+            maxCombo: snapshot.maxCombo
+        });
+        console.info(
+            "[GameBootstrap] local-leaderboard rank=" + (result.rank === null ? "outside-top-10" : result.rank)
+            + " retained=" + result.retained
+        );
+    }
+
+    private leaderboardPersistenceNotice(issue: LocalLeaderboardPersistenceIssue | null): string {
+        if (!issue) {
+            return "";
+        }
+        if (issue === "storage-data-corrupt") {
+            return "未持久化：检测到损坏的本地榜数据，本次成绩仅在当前会话保留。";
+        }
+        return "未持久化：本地存储不可用，本次成绩仅在当前会话保留。";
     }
 
     private danceInstruction(segment: GroupDanceSegment): string {
