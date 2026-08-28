@@ -34,7 +34,8 @@ import {
     calculateNoteChipVerticalLayout,
     calculateRhythmVerticalLayout,
     calculateSongListVerticalLayout,
-    shouldShowLandscapeRotation
+    shouldShowLandscapeRotation,
+    shouldUseCompactMenuLayout
 } from "./RhythmLayout";
 import { SongPreviewController, SongPreviewSnapshot } from "./SongPreviewController";
 import {
@@ -759,6 +760,10 @@ export default class GameBootstrap extends cc.Component {
             frameSize && frameSize.width,
             frameSize && frameSize.height
         );
+        const compactMenu = shouldUseCompactMenuLayout(
+            frameSize ? frameSize.height : NaN,
+            this.viewportHeight
+        );
 
         const halfWidth = this.viewportWidth * 0.5;
         const halfHeight = this.viewportHeight * 0.5;
@@ -780,7 +785,7 @@ export default class GameBootstrap extends cc.Component {
         this.globalBarWidth = Math.max(280, this.panelWidth - 84);
 
         this.layoutBackground();
-        this.layoutMenu(contentWidth, contentCenterX);
+        this.layoutMenu(contentWidth, contentCenterX, compactMenu);
         this.layoutInfoOverlay();
         this.layoutOrientationGuard(showOrientationGuard);
         this.drawStage();
@@ -892,10 +897,9 @@ export default class GameBootstrap extends cc.Component {
         this.backgroundFallback.fill();
     }
 
-    private layoutMenu(contentWidth: number, contentCenterX: number): void {
+    private layoutMenu(contentWidth: number, contentCenterX: number, compact: boolean): void {
         const halfWidth = this.viewportWidth * 0.5;
         const halfHeight = this.viewportHeight * 0.5;
-        const compact = this.viewportHeight < 640;
         const safePressure = Math.min(1, (this.metrics.safe.top + this.metrics.safe.bottom) / 150);
         const logoScale = compact ? 0.45 - safePressure * 0.15 : 0.62;
         this.menuLogo.scale = logoScale;
