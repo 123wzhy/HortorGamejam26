@@ -10,3 +10,9 @@ build/
 node_modules/
 *.log
 .DS_Store
+
+# Source-only dancer inputs live outside Creator's assets database.
+source-assets/dancer/*.fbx
+source-assets/dancer/*.fbx.meta
+source-assets/dancer/*.fbm/
+source-assets/dancer/*.fbm.meta

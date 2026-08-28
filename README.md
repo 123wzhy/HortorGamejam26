@@ -27,6 +27,12 @@ npm run verify
 - `npm run build`：调用本机 Creator 2.4.9，以 `web-mobile` release 配置输出到 `build/web-mobile/`。
 - `npm run verify`：重新构建，检查 head/SDK/source map、29 张 texture 清单、7 段舞者动画与 Bundle 预算，生成并检查 `build/builda-web.zip`；同时生成只含两段宿主试听音频的 `build/builda-assets.zip` 并执行 `builda assets check`。
 
+原始舞者 FBX 只放在 Creator 资源数据库之外的 `source-assets/dancer/`，不得放入 `assets/`。
+运行时只消费已转换并检入的 glTF/JPEG/bin；这样 Creator 不会把 FBX 自带模型和纹理当作运行资源，
+也不会尝试解析不存在的 `.fbm/Image_0.png`。源 FBX、转换器生成的 `.fbm/` 及其 `.meta` 均不提交。
+当前四段新增动作的源文件哈希、转换参数、骨名/父级与 rest-space 重定向证据由
+`tools/verify-dancer-assets.mjs` 锁定；源文件与重定向注意事项见 `source-assets/dancer/README.md`。
+
 若 Creator 不在默认路径，可显式指定：
 
 ```bash
@@ -96,10 +102,10 @@ assets/scripts/
 - 8 张附加玩法贴图依据用户提供的《游戏界面完整版》设计效果图由 ImageGen 透明拆分并核验为 RGBA；仓库内仅保存经 macOS `sips` 按最长边缩放的运行时派生图，生成源图保持不变；它们与当前 3D 舞者是两套独立资源。
 - `songPreviewPlay / songPreviewPause / songRowSelected / songRowIdle` 依据本轮选歌参考图由 ImageGen 分别生成透明按钮与可九宫格拉伸的空行底板；生成时未把参考图中的示例星级、文字或整张面板烘焙进运行资源。
 - `assets/spine/runtime/` 配置为名为 `dancer` 的本地 Bundle，只包含轻量 glTF、1024 JPEG 与 Creator 2.4.9 生成的运行时子资源；约 3.68 MiB 外部 buffer 单独放在非 Bundle 的 `assets/spine/import/`，仅供 Creator 导入，发布构建不会再重复收录它。模型保留 54 个 joint，权重与全部动画 rotation quaternion 都使用 Float32：前者规避 Creator 2.4.9 把归一化 Uint8 权重导成 0–255 未归一化数据，后者规避归一化 Int16 四元数被当成原始大整数。四段新增动作按唯一骨名与相同父骨映射，并使用 `targetRestLocal × inverse(sourceRestLocal) × sourceAnimatedLocal` 修正源/目标局部 rest-space 差异；所有非菜单待机动作的 Hips 首帧再以三轴常量偏移对齐旧 `IdleSway` 基准，不改变各段内部相对位移。Creator 2.4.9 对新增 accessor 还要求显式 `byteOffset: 0`，资源门禁会直接检查 glTF、`.meta` 和真实构建中的时长/帧数。
-- 所有原始 FBX 与转换器产生的 `.fbm/Image_0.png` 只作为本地源材保留，不提交、不被场景引用，也绝不进入 Web 构建或发布 zip。模型加载失败时保留原有 `cc.Graphics` 舞者，不阻塞平台 ready 或核心玩法。
+- 所有原始 FBX 与转换器产生的 `.fbm/Image_0.png` 只在 `source-assets/dancer/` 或系统临时目录作为本地源材保留，不放入 Creator 的 `assets/`，不提交、不被场景引用，也绝不进入 Web 构建或发布 zip。模型加载失败时保留原有 `cc.Graphics` 舞者，不阻塞平台 ready 或核心玩法。
 - 背景按比例 cover；Logo、按钮、任务面板和选歌面板等比缩放、不拉伸；交互层同时避让安全区和 Builda 右上胶囊。
 - 任务面板只叠加当前引擎快照中的完成组数、得分和最高连击；选歌面板遍历 `DEMO_SONGS`，标题、BPM、组数、音符数和星级全部来自仓库运行数据，不采用设计稿里的示例数字或歌名。
-- `npm run verify` 会确认 texture Bundle 恰含 29 张完整贴图，dancer Bundle 含 `BullDancer` Prefab 与 7 段 `cc.SkeletonAnimationClip`、不含导入专用 buffer 且不超过 5 MiB，并排除设计稿、PSD、FBX/FBM、TypeScript 源码和外置 WAV；两段试听只允许进入单独的 Builda assets zip。
+- `npm run build` 会保存并扫描完整 Creator 日志，遇到原始 FBX 导入引发的 `.fbm/Image_0.png` 缺失立即失败；`cloud-function unloaded` 等无关宿主日志不会误报。`npm run verify` 还会确认 texture Bundle 恰含 29 张完整贴图，dancer Bundle 含 `BullDancer` Prefab 与 7 段 `cc.SkeletonAnimationClip`、不含导入专用 buffer 且不超过 5 MiB，并排除设计稿、PSD、FBX/FBM、TypeScript 源码和外置 WAV；两段试听只允许进入单独的 Builda assets zip。
 
 更完整的长期门禁见 `AGENTS.md` 的“设计稿与美术资源协作规范”。
 

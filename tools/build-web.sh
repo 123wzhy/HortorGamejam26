@@ -7,6 +7,7 @@ DEFAULT_CREATOR="/Applications/Cocos/Creator/2.4.9/CocosCreator.app/Contents/Mac
 CREATOR_BIN=${COCOS_CREATOR:-$DEFAULT_CREATOR}
 BUILD_ROOT="$PROJECT_ROOT/build"
 WEB_DIR="$BUILD_ROOT/web-mobile"
+BUILD_LOG="$BUILD_ROOT/cocos-build.log"
 
 if [ ! -x "$CREATOR_BIN" ]; then
   echo "error: Cocos Creator 2.4.9 not found at $CREATOR_BIN" >&2
@@ -19,7 +20,18 @@ mkdir -p "$BUILD_ROOT"
 
 # Creator 2.4.9 calls the modern mainBundleIsRemote option mainIsRemote.
 BUILD_OPTIONS="platform=web-mobile;buildPath=$BUILD_ROOT;debug=false;sourceMaps=false;mainIsRemote=false;md5Cache=false;webOrientation=landscape"
-"$CREATOR_BIN" --path "$PROJECT_ROOT" --build "$BUILD_OPTIONS"
+if ! "$CREATOR_BIN" --path "$PROJECT_ROOT" --build "$BUILD_OPTIONS" >"$BUILD_LOG" 2>&1; then
+  cat "$BUILD_LOG"
+  echo "error: Cocos Creator build failed; full log: $BUILD_LOG" >&2
+  exit 1
+fi
+cat "$BUILD_LOG"
+
+if ! node "$SCRIPT_DIR/check-cocos-build-log.mjs" "$BUILD_LOG"; then
+  echo "error: Cocos imported a source FBX with a missing embedded texture sidecar" >&2
+  echo "Keep raw FBX files in source-assets/dancer, outside Creator's assets directory." >&2
+  exit 1
+fi
 
 if [ ! -f "$WEB_DIR/index.html" ]; then
   echo "error: Cocos build did not produce $WEB_DIR/index.html" >&2
@@ -48,3 +60,4 @@ fi
 
 echo "cocos-build=ok"
 echo "web-dir=$WEB_DIR"
+echo "cocos-log=$BUILD_LOG"

@@ -578,6 +578,14 @@ try {
 
     assert(gltf.images && gltf.images.length === 1, "expected one dancer texture reference");
     assert(gltf.images[0].uri === "BullAlbedo.jpg", "dancer texture URI changed");
+    const runtimeUris = []
+        .concat((gltf.buffers || []).map((item) => item.uri))
+        .concat((gltf.images || []).map((item) => item.uri))
+        .filter((item) => typeof item === "string");
+    assert(
+        runtimeUris.every((uri) => !/[.]fbx(?:$|[/?#])|[.]fbm(?:$|[/?#])|Image_0[.]png/i.test(uri)),
+        "runtime glTF must not reference raw FBX/FBM source material"
+    );
     assert(jpeg[0] === 0xff && jpeg[1] === 0xd8, "BullAlbedo.jpg is missing JPEG SOI magic");
     assert(
         jpeg[jpeg.length - 2] === 0xff && jpeg[jpeg.length - 1] === 0xd9,

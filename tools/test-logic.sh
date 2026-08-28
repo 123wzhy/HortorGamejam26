@@ -16,6 +16,7 @@ fi
 
 node "$PROJECT_ROOT/tools/verify-song-previews.mjs"
 node "$PROJECT_ROOT/tools/verify-dancer-assets.mjs"
+sh "$PROJECT_ROOT/tools/test-cocos-build-log.sh"
 rm -rf "$OUTPUT_DIR"
 tsc -p "$PROJECT_ROOT/tsconfig.logic.json"
 node "$OUTPUT_DIR/tests/logic.spec.js"
