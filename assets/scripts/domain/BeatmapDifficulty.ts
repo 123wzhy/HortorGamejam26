@@ -1,9 +1,10 @@
 import { Beatmap, BeatNote } from "./Beatmap";
 
 export const MAX_DIFFICULTY_STARS = 3;
+export type DifficultyStars = 1 | 2 | 3;
 
 export interface BeatmapDifficultyAnalysis {
-    stars: number;
+    stars: DifficultyStars;
     score: number;
     noteCount: number;
     activeDurationMs: number;
@@ -70,7 +71,10 @@ export function analyzeBeatmapDifficulty(beatmap: Beatmap): BeatmapDifficultyAna
         + variationPressure * 0.12
         + rapidPressure * 0.18
     );
-    const stars = score >= 0.67 ? 3 : score >= 0.34 ? 2 : 1;
+    // A three-step display needs broad bands rather than a five-star game's
+    // narrow top tier. These cutoffs keep a one-beat 100 BPM chart at Normal
+    // while promoting the denser 120 BPM chart to Hard.
+    const stars: DifficultyStars = score >= 0.46 ? 3 : score >= 0.28 ? 2 : 1;
 
     return {
         stars,

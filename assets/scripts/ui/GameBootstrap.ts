@@ -1,9 +1,11 @@
 import { DEMO_BEATMAP, Direction } from "../domain/Beatmap";
+import { analyzeBeatmapDifficulty, MAX_DIFFICULTY_STARS } from "../domain/BeatmapDifficulty";
 import {
     LocalLeaderboard,
     LocalLeaderboardPersistenceIssue,
     LocalLeaderboardStorage
 } from "../domain/LocalLeaderboard";
+import { beatmapNoteCount, DEMO_SONGS, SongDefinition } from "../domain/SongCatalog";
 import {
     GroupDanceFlow,
     GroupDanceSegment,
@@ -23,6 +25,7 @@ import {
     calculateNoteChipVerticalLayout,
     calculateRhythmVerticalLayout
 } from "./RhythmLayout";
+import { SongPreviewController, SongPreviewSnapshot } from "./SongPreviewController";
 import {
     canEnterGameplay,
     initialUiStartupState,
@@ -50,7 +53,6 @@ const GRADE_TEXT: { [key: string]: string } = {
 
 const NOTE_APPROACH_MS = 1200;
 const DIRECTIONS: Direction[] = ["left", "down", "up", "right"];
-const DEMO_NOTE_COUNT = DEMO_BEATMAP.groups.reduce((count, group) => count + group.notes.length, 0);
 const SMALL_ARROW_ASPECT = 73 / 71;
 const TOUCH_ARROW_ASPECT = 142 / 146;
 
@@ -93,10 +95,21 @@ interface NoteChipView {
     height: number;
 }
 
+interface SongRowView {
+    node: cc.Node;
+    background: cc.Sprite;
+    fallback: cc.Graphics;
+    previewButton: cc.Node;
+    title: cc.Label;
+    stars: cc.Node[];
+    songIndex: number;
+}
+
 @ccclass
 export default class GameBootstrap extends cc.Component {
     private readonly adapter: BuildaAdapter = new BuildaAdapter();
     private readonly art: ArtAssetCatalog = new ArtAssetCatalog();
+    private readonly songPreview: SongPreviewController = new SongPreviewController(this.adapter);
     private readonly clock: SongClock = new SongClock();
     private readonly judge: JudgeSystem = new JudgeSystem();
     private readonly engine: SequenceEngine = new SequenceEngine(DEMO_BEATMAP, this.judge);
@@ -127,7 +140,9 @@ export default class GameBootstrap extends cc.Component {
     private menuSongArtwork: cc.Node = null;
     private menuSongGraphics: cc.Graphics = null;
     private menuSongTitle: cc.Label = null;
-    private menuSongLabel: cc.Label = null;
+    private menuSongRowsRoot: cc.Node = null;
+    private menuSongRows: SongRowView[] = [];
+    private menuSongStatusLabel: cc.Label = null;
     private menuHintRow: cc.Node = null;
     private menuHintArrows: cc.Node[] = [];
     private menuStatusLabel: cc.Label = null;
@@ -173,6 +188,7 @@ export default class GameBootstrap extends cc.Component {
     };
     private startupState: UiStartupState = initialUiStartupState();
     private menuCardsHiddenForSafeArea: boolean = false;
+    private selectedSongIndex: number = 0;
     private uiReady: boolean = false;
     private gameplayActive: boolean = false;
     private pausedByHost: boolean = false;
@@ -275,6 +291,7 @@ export default class GameBootstrap extends cc.Component {
         });
         this.applyArtworkFrame(this.menuTaskArtwork, this.art.get("todayTaskPanel"));
         this.applyArtworkFrame(this.menuSongArtwork, this.art.get("songSelectPanel"));
+        this.refreshSongRows();
         this.groupRenderKey = "";
     }
 
@@ -288,6 +305,7 @@ export default class GameBootstrap extends cc.Component {
     }
 
     protected onDestroy(): void {
+        this.songPreview.stop();
         if (this.dancerController) {
             this.dancerController.dispose();
             this.dancerController = null;
@@ -352,6 +370,7 @@ export default class GameBootstrap extends cc.Component {
         this.node.removeAllChildren();
         this.menuTopButtons = [];
         this.menuHintArrows = [];
+        this.menuSongRows = [];
         this.directionButtons = [];
         this.noteChipViews = [];
         const dancerGroupIndex = this.renderGroupIndex("dancer");
@@ -466,16 +485,19 @@ export default class GameBootstrap extends cc.Component {
             20,
             cc.color(255, 183, 55)
         );
-        this.menuSongLabel = this.makeLabel(
+        this.menuSongRowsRoot = new cc.Node("SongRows");
+        this.menuSongRowsRoot.parent = this.menuSongPanel;
+        DEMO_SONGS.forEach((_song, songIndex) => {
+            this.menuSongRows.push(this.makeSongRow(this.menuSongRowsRoot, songIndex));
+        });
+        this.menuSongStatusLabel = this.makeLabel(
             this.menuSongPanel,
-            "SongText",
-            "▶  " + DEMO_BEATMAP.title + "\n"
-            + DEMO_BEATMAP.bpm + " BPM · " + DEMO_BEATMAP.groups.length + " 组 · " + DEMO_NOTE_COUNT + " 音符\n"
-            + "当前仅开放这一首 Demo 曲目",
-            16,
-            cc.color(255, 239, 204)
+            "SongPreviewStatus",
+            "黄底为当前选择 · 左侧可试听",
+            11,
+            cc.color(238, 220, 183)
         );
-        this.menuSongLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+        this.refreshSongRows();
 
         this.menuHintRow = new cc.Node("ControlHint");
         this.menuHintRow.parent = this.menuRoot;
@@ -856,10 +878,218 @@ export default class GameBootstrap extends cc.Component {
         this.menuTaskLabel.lineHeight = Math.max(25, Math.round(cardHeight * 0.19));
         this.menuTaskLabel.node.setContentSize(Math.max(96, cardWidth - 42), cardHeight * 0.66);
         this.menuTaskLabel.node.setPosition(0, -cardHeight * 0.1);
-        this.menuSongLabel.fontSize = bodyFontSize;
-        this.menuSongLabel.lineHeight = Math.max(24, Math.round(cardHeight * 0.15));
-        this.menuSongLabel.node.setContentSize(Math.max(96, cardWidth - 40), cardHeight * 0.68);
-        this.menuSongLabel.node.setPosition(0, -cardHeight * 0.09);
+        this.layoutSongRows(cardWidth, cardHeight);
+    }
+
+    private layoutSongRows(cardWidth: number, cardHeight: number): void {
+        const rowWidth = Math.max(170, cardWidth * 0.86);
+        const rowHeight = Math.max(34, Math.min(52, cardHeight * 0.205));
+        const rowGap = rowHeight + Math.max(2, cardHeight * 0.012);
+        const firstRowY = cardHeight * 0.205;
+        const previewScale = rowHeight / 66;
+        const starSize = Math.max(14, Math.min(21, rowHeight * 0.41));
+        const starScale = starSize / 128;
+        const starsWidth = MAX_DIFFICULTY_STARS * starSize + (MAX_DIFFICULTY_STARS - 1) * 2;
+
+        this.menuSongRowsRoot.setContentSize(cardWidth, cardHeight);
+        this.menuSongRows.forEach((view, rowIndex) => {
+            view.node.setContentSize(rowWidth, rowHeight);
+            view.node.setPosition(0, firstRowY - rowIndex * rowGap);
+            view.background.node.setContentSize(rowWidth, rowHeight);
+
+            view.previewButton.scale = previewScale;
+            view.previewButton.setPosition(-rowWidth * 0.5 + rowHeight * 0.58, 0);
+
+            const textLeft = -rowWidth * 0.5 + rowHeight * 1.12;
+            const textRight = rowWidth * 0.5 - starsWidth - 13;
+            const textWidth = Math.max(60, textRight - textLeft);
+            view.title.fontSize = Math.max(9, Math.min(12, rowHeight * 0.245));
+            view.title.lineHeight = Math.max(11, Math.round(view.title.fontSize * 1.12));
+            view.title.node.setContentSize(textWidth, rowHeight - 8);
+            view.title.node.setPosition(textLeft + textWidth * 0.5, 0);
+
+            const firstStarX = rowWidth * 0.5 - starsWidth + starSize * 0.5 - 7;
+            view.stars.forEach((star, starIndex) => {
+                star.scale = starScale;
+                star.setPosition(firstStarX + starIndex * (starSize + 2), 0);
+            });
+        });
+
+        this.menuSongStatusLabel.fontSize = Math.max(9, Math.min(11, cardHeight * 0.05));
+        this.menuSongStatusLabel.lineHeight = Math.round(this.menuSongStatusLabel.fontSize * 1.15);
+        this.menuSongStatusLabel.node.setContentSize(Math.max(120, rowWidth), Math.max(22, cardHeight * 0.12));
+        this.menuSongStatusLabel.node.setPosition(0, -cardHeight * 0.285);
+        this.refreshSongRows();
+    }
+
+    private makeSongRow(parent: cc.Node, songIndex: number): SongRowView {
+        const node = new cc.Node("SongRow-" + (songIndex + 1));
+        node.parent = parent;
+        const fallback = node.addComponent(cc.Graphics);
+
+        const backgroundNode = new cc.Node("Background");
+        backgroundNode.parent = node;
+        const background = backgroundNode.addComponent(cc.Sprite);
+        background.sizeMode = cc.Sprite.SizeMode.CUSTOM;
+        background.type = cc.Sprite.Type.SLICED;
+
+        const previewButton = this.makeSpriteButton(
+            node,
+            "Preview-" + (songIndex + 1),
+            this.art.get("songPreviewPlay"),
+            64,
+            64,
+            "▶",
+            () => this.toggleSongPreview(songIndex),
+            true
+        );
+        const title = this.makeLabel(node, "Title", "", 12, cc.color(255, 239, 204));
+        title.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+        const stars: cc.Node[] = [];
+        for (let starIndex = 0; starIndex < MAX_DIFFICULTY_STARS; starIndex += 1) {
+            stars.push(this.makeSpriteNode(
+                node,
+                "DifficultyStar-" + (starIndex + 1),
+                this.art.get("starEmpty"),
+                128,
+                128,
+                "☆"
+            ));
+        }
+
+        node.on(cc.Node.EventType.TOUCH_START, () => {
+            node.scale = 0.985;
+        });
+        node.on(cc.Node.EventType.TOUCH_END, () => {
+            node.scale = 1;
+            this.selectSong(songIndex);
+        });
+        node.on(cc.Node.EventType.TOUCH_CANCEL, () => {
+            node.scale = 1;
+        });
+
+        return { node, background, fallback, previewButton, title, stars, songIndex };
+    }
+
+    private selectedSong(): SongDefinition {
+        return DEMO_SONGS[this.selectedSongIndex] || DEMO_SONGS[0];
+    }
+
+    private selectSong(songIndex: number): void {
+        if (songIndex < 0 || songIndex >= DEMO_SONGS.length) {
+            return;
+        }
+        const changed = this.selectedSongIndex !== songIndex;
+        this.selectedSongIndex = songIndex;
+        if (changed && this.songPreview.getSnapshot().phase !== "idle") {
+            const pendingStop = this.songPreview.stop();
+            this.refreshSongRows();
+            pendingStop.then(() => {
+                if (cc.isValid(this.node)) {
+                    this.refreshSongRows();
+                }
+            });
+        } else {
+            this.refreshSongRows();
+        }
+        console.info("[GameBootstrap] selected-song=" + this.selectedSong().id);
+    }
+
+    private toggleSongPreview(songIndex: number): void {
+        if (songIndex < 0 || songIndex >= DEMO_SONGS.length) {
+            return;
+        }
+        this.selectedSongIndex = songIndex;
+        const song = this.selectedSong();
+        const pending = this.songPreview.toggle(song.id, song.previewPath, song.previewVolume);
+        this.refreshSongRows();
+        pending.then((snapshot) => {
+            if (!cc.isValid(this.node)) {
+                return;
+            }
+            this.refreshSongRows(snapshot);
+        });
+        console.info("[GameBootstrap] preview-toggle=" + song.id);
+    }
+
+    private stopSongPreview(): void {
+        if (this.songPreview.getSnapshot().phase === "idle") {
+            return;
+        }
+        const pending = this.songPreview.stop();
+        this.refreshSongRows();
+        pending.then((snapshot) => {
+            if (cc.isValid(this.node)) {
+                this.refreshSongRows(snapshot);
+            }
+        });
+    }
+
+    private refreshSongRows(snapshot: SongPreviewSnapshot = this.songPreview.getSnapshot()): void {
+        if (!this.menuSongRows || this.menuSongRows.length === 0) {
+            return;
+        }
+        this.menuSongRows.forEach((view) => {
+            const song = DEMO_SONGS[view.songIndex];
+            const selected = view.songIndex === this.selectedSongIndex;
+            const rowFrame = this.art.get(selected ? "songRowSelected" : "songRowIdle");
+            view.background.spriteFrame = rowFrame;
+            view.background.type = cc.Sprite.Type.SLICED;
+            this.drawSongRowFallback(view, selected, !!rowFrame);
+
+            const difficulty = analyzeBeatmapDifficulty(song.beatmap);
+            const previewActive = snapshot.songId === song.id && snapshot.phase !== "idle";
+            this.applyButtonFrame(
+                view.previewButton,
+                this.art.get(previewActive ? "songPreviewPause" : "songPreviewPlay")
+            );
+            view.title.string = song.beatmap.title + "\n"
+                + song.beatmap.bpm + " BPM · " + song.beatmap.groups.length + " 组 · "
+                + beatmapNoteCount(song.beatmap) + " 音符";
+            view.title.node.color = selected ? cc.color(48, 31, 8) : cc.color(255, 239, 204);
+            view.stars.forEach((star, starIndex) => {
+                this.applySpriteFrame(
+                    star,
+                    this.art.get(starIndex < difficulty.stars ? "starFilled" : "starEmpty")
+                );
+            });
+        });
+
+        if (!this.menuSongStatusLabel) {
+            return;
+        }
+        if (snapshot.phase === "starting") {
+            this.menuSongStatusLabel.string = "正在加载试听…";
+            this.menuSongStatusLabel.node.color = cc.color(255, 224, 139);
+        } else if (snapshot.phase === "playing") {
+            this.menuSongStatusLabel.string = "正在试听 · 再点左侧按钮暂停";
+            this.menuSongStatusLabel.node.color = cc.color(255, 224, 139);
+        } else if (snapshot.phase === "stopping") {
+            this.menuSongStatusLabel.string = "正在停止试听…";
+            this.menuSongStatusLabel.node.color = cc.color(238, 220, 183);
+        } else if (snapshot.available === false) {
+            this.menuSongStatusLabel.string = "试听不可用 · 请在 Builda 测试外壳或 App 中重试";
+            this.menuSongStatusLabel.node.color = cc.color(255, 151, 128);
+        } else {
+            this.menuSongStatusLabel.string = "黄底为当前选择 · 左侧可试听";
+            this.menuSongStatusLabel.node.color = cc.color(238, 220, 183);
+        }
+    }
+
+    private drawSongRowFallback(view: SongRowView, selected: boolean, hasFrame: boolean): void {
+        view.fallback.clear();
+        if (hasFrame) {
+            return;
+        }
+        const width = Math.max(1, view.node.width);
+        const height = Math.max(1, view.node.height);
+        view.fallback.fillColor = selected ? cc.color(183, 133, 0, 248) : cc.color(24, 22, 19, 248);
+        view.fallback.roundRect(-width * 0.5, -height * 0.5, width, height, Math.min(9, height * 0.12));
+        view.fallback.fill();
+        view.fallback.strokeColor = selected ? cc.color(255, 208, 35) : cc.color(93, 82, 66);
+        view.fallback.lineWidth = 2;
+        view.fallback.roundRect(-width * 0.5, -height * 0.5, width, height, Math.min(9, height * 0.12));
+        view.fallback.stroke();
     }
 
     private layoutInfoOverlay(): void {
@@ -900,6 +1130,18 @@ export default class GameBootstrap extends cc.Component {
             this.refreshStartupStatus();
             return;
         }
+        const song = this.selectedSong();
+        if (song.id !== DEMO_BEATMAP.id) {
+            this.stopSongPreview();
+            this.showInfo(
+                "曲目已选择",
+                "已选择「" + song.beatmap.title + "」。\n\n"
+                + "这首曲目的选单与试听已经可用；玩法切换将在下一阶段接入。"
+                + "当前开始游戏请先选择 NEON GRID。"
+            );
+            return;
+        }
+        this.stopSongPreview();
         this.hideInfo();
         this.menuRoot.active = false;
         this.gameRoot.active = true;
@@ -931,6 +1173,7 @@ export default class GameBootstrap extends cc.Component {
         this.menuRoot.active = true;
         this.hideInfo();
         this.refreshMenuSummary();
+        this.refreshSongRows();
         console.info("[GameBootstrap] screen=menu");
         this.layout();
     }
@@ -1664,22 +1907,32 @@ export default class GameBootstrap extends cc.Component {
         width: number,
         height: number,
         fallbackText: string,
-        onTap: () => void
+        onTap: () => void,
+        stopPropagation: boolean = false
     ): cc.Node {
         const node = new cc.Node(name);
         node.parent = parent;
         node.setContentSize(width, height);
         const visual = this.makeSpriteNode(node, name + "Visual", frame, width, height, fallbackText);
-        node.on(cc.Node.EventType.TOUCH_START, () => {
+        node.on(cc.Node.EventType.TOUCH_START, (event: any) => {
+            if (stopPropagation && event && typeof event.stopPropagation === "function") {
+                event.stopPropagation();
+            }
             visual.scale = 0.94;
             visual.color = cc.color(255, 222, 168);
         });
-        node.on(cc.Node.EventType.TOUCH_END, () => {
+        node.on(cc.Node.EventType.TOUCH_END, (event: any) => {
+            if (stopPropagation && event && typeof event.stopPropagation === "function") {
+                event.stopPropagation();
+            }
             visual.scale = 1;
             visual.color = cc.Color.WHITE;
             onTap();
         });
-        node.on(cc.Node.EventType.TOUCH_CANCEL, () => {
+        node.on(cc.Node.EventType.TOUCH_CANCEL, (event: any) => {
+            if (stopPropagation && event && typeof event.stopPropagation === "function") {
+                event.stopPropagation();
+            }
             visual.scale = 1;
             visual.color = cc.Color.WHITE;
         });
@@ -1813,6 +2066,9 @@ export default class GameBootstrap extends cc.Component {
 
     private pauseForHost(): void {
         this.hostSuspended = true;
+        if (!this.gameplayActive) {
+            this.stopSongPreview();
+        }
         if (this.dancerController) {
             this.dancerController.pause();
         }

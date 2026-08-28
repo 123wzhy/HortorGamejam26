@@ -1,9 +1,11 @@
 import { Beatmap, DEMO_BEATMAP } from "../assets/scripts/domain/Beatmap";
+import { analyzeBeatmapDifficulty, MAX_DIFFICULTY_STARS } from "../assets/scripts/domain/BeatmapDifficulty";
 import {
     LOCAL_LEADERBOARD_KEY,
     LocalLeaderboard,
     LocalLeaderboardStorage
 } from "../assets/scripts/domain/LocalLeaderboard";
+import { beatmapNoteCount, DEMO_SONGS } from "../assets/scripts/domain/SongCatalog";
 import {
     DANCE_COMBO_DURATION_MS,
     GroupDanceFlow
@@ -30,6 +32,10 @@ import {
     markPlatformReady,
     startupStatusText
 } from "../assets/scripts/ui/UiStartupState";
+import {
+    SongPreviewAudioPort,
+    SongPreviewController
+} from "../assets/scripts/ui/SongPreviewController";
 
 declare const global: any;
 
@@ -142,6 +148,117 @@ function testDemoGridAndGroups(): void {
             equal(gap >= beatDurationMs * 2, true, group.id + " leaves at least one empty beat");
         }
     });
+}
+
+function testSongCatalogAndGeneratedDifficulty(): void {
+    equal(DEMO_SONGS.length, 2, "Song menu is driven by exactly two Phase A definitions");
+    equal(
+        DEMO_SONGS.map((song) => song.id).join(","),
+        "neon-grid-demo,golden-stampede-demo",
+        "Song definitions retain their stable ids"
+    );
+    equal(
+        DEMO_SONGS.map((song) => song.previewPath).join(","),
+        "audio/bgm/neon-grid-demo-preview.wav,audio/bgm/golden-stampede-demo-preview.wav",
+        "Each song maps to one Builda audio asset"
+    );
+    equal(
+        DEMO_SONGS.every((song) => song.previewVolume > 0 && song.previewVolume <= 1),
+        true,
+        "Preview volumes stay within the SDK contract"
+    );
+    equal(
+        DEMO_SONGS.map((song) => beatmapNoteCount(song.beatmap)).join(","),
+        "31,31",
+        "Song rows expose generated note counts instead of design-sample text"
+    );
+
+    const analyses = DEMO_SONGS.map((song) => analyzeBeatmapDifficulty(song.beatmap));
+    equal(
+        analyses.map((analysis) => analysis.stars).join(","),
+        "2,3",
+        "Difficulty analysis separates the 100 BPM and 120 BPM generated charts"
+    );
+    equal(analyses[1].score > analyses[0].score, true, "The denser faster chart has the higher measured score");
+    equal(
+        analyses.every((analysis) => analysis.stars >= 1 && analysis.stars <= MAX_DIFFICULTY_STARS),
+        true,
+        "Generated difficulty stays inside the three-star UI scale"
+    );
+
+    const emptyAnalysis = analyzeBeatmapDifficulty({
+        id: "empty",
+        title: "Empty",
+        bpm: 0,
+        groups: []
+    });
+    equal(emptyAnalysis.stars, 1, "An empty or not-yet-generated chart safely displays one star");
+    equal(emptyAnalysis.score, 0, "An empty chart has no synthetic difficulty pressure");
+}
+
+class RecordingPreviewAudio implements SongPreviewAudioPort {
+    public readonly plays: Array<{ path: string; loop: boolean; volume: number }> = [];
+    public stopCount: number = 0;
+    public playResult: boolean = true;
+    public stopResult: boolean = true;
+
+    public playBGM(path: string, loop: boolean = true, volume: number = 1): Promise<boolean> {
+        this.plays.push({ path, loop, volume });
+        return Promise.resolve(this.playResult);
+    }
+
+    public stopBGM(): Promise<boolean> {
+        this.stopCount += 1;
+        return Promise.resolve(this.stopResult);
+    }
+}
+
+async function testSongPreviewControllerSerialization(): Promise<void> {
+    const audio = new RecordingPreviewAudio();
+    const controller = new SongPreviewController(audio);
+    const firstSong = DEMO_SONGS[0];
+    const secondSong = DEMO_SONGS[1];
+
+    const firstStart = controller.toggle(firstSong.id, firstSong.previewPath, 3);
+    equal(controller.getSnapshot().phase, "starting", "A play tap immediately exposes loading state");
+    const firstPlaying = await firstStart;
+    equal(firstPlaying.phase, "playing", "A successful host call exposes playing state");
+    equal(audio.plays[0].path, firstSong.previewPath, "The controller forwards the catalog path");
+    equal(audio.plays[0].loop, true, "Song previews loop through the host BGM channel");
+    equal(audio.plays[0].volume, 1, "Out-of-range preview volume is clamped before SDK use");
+
+    const firstStop = controller.toggle(firstSong.id, firstSong.previewPath, firstSong.previewVolume);
+    equal(controller.getSnapshot().phase, "stopping", "A second tap immediately exposes pause state");
+    equal((await firstStop).phase, "idle", "A second tap stops the active preview");
+
+    const switchedAudio = new RecordingPreviewAudio();
+    const switched = new SongPreviewController(switchedAudio);
+    const staleStart = switched.toggle(firstSong.id, firstSong.previewPath, firstSong.previewVolume);
+    const latestStart = switched.toggle(secondSong.id, secondSong.previewPath, secondSong.previewVolume);
+    await Promise.all([staleStart, latestStart]);
+    equal(switchedAudio.plays.length, 1, "A rapid song switch never starts the stale queued preview");
+    equal(switchedAudio.plays[0].path, secondSong.previewPath, "A rapid switch starts only the latest selection");
+    equal(switched.getSnapshot().songId, secondSong.id, "The latest song owns the playing snapshot");
+    equal(switched.getSnapshot().phase, "playing", "The latest song reaches playing state");
+
+    const cancelledAudio = new RecordingPreviewAudio();
+    const cancelled = new SongPreviewController(cancelledAudio);
+    const pendingStart = cancelled.toggle(firstSong.id, firstSong.previewPath, firstSong.previewVolume);
+    const pendingStop = cancelled.stop();
+    await Promise.all([pendingStart, pendingStop]);
+    equal(cancelledAudio.plays.length, 0, "Play then pause before host startup cannot leak stale audio");
+    equal(cancelled.getSnapshot().phase, "idle", "A cancelled startup settles to idle");
+
+    const unavailableAudio = new RecordingPreviewAudio();
+    unavailableAudio.playResult = false;
+    const unavailable = new SongPreviewController(unavailableAudio);
+    const unavailableSnapshot = await unavailable.toggle(
+        firstSong.id,
+        firstSong.previewPath,
+        firstSong.previewVolume
+    );
+    equal(unavailableSnapshot.phase, "idle", "A rejected host audio call returns to idle");
+    equal(unavailableSnapshot.available, false, "A rejected host audio call remains visible to the UI");
 }
 
 function testTooEarlyAndWrongDirectionBoundary(): void {
@@ -1009,6 +1126,7 @@ function testUiStartupRaceAndFallback(): void {
 async function run(): Promise<void> {
     testJudgeBoundaries();
     testDemoGridAndGroups();
+    testSongCatalogAndGeneratedDifficulty();
     testTooEarlyAndWrongDirectionBoundary();
     testPerNoteScoresComboAndGroupAdvance();
     testOnlyEarliestNoteCanSettle();
@@ -1034,7 +1152,8 @@ async function run(): Promise<void> {
     testUiStartupRaceAndFallback();
     await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
-    console.log("logic-tests=passed cases=27");
+    await testSongPreviewControllerSerialization();
+    console.log("logic-tests=passed cases=29");
 }
 
 run().catch((error) => {

@@ -14,6 +14,7 @@ if ! command -v tsc >/dev/null 2>&1; then
   exit 1
 fi
 
+node "$PROJECT_ROOT/tools/verify-song-previews.mjs"
 node "$PROJECT_ROOT/tools/verify-dancer-assets.mjs"
 rm -rf "$OUTPUT_DIR"
 tsc -p "$PROJECT_ROOT/tsconfig.logic.json"

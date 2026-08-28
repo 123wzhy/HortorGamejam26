@@ -5,7 +5,9 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 WEB_DIR="$PROJECT_ROOT/build/web-mobile"
 ZIP_PATH="$PROJECT_ROOT/build/builda-web.zip"
+ASSETS_ZIP_PATH="$PROJECT_ROOT/build/builda-assets.zip"
 
+node "$PROJECT_ROOT/tools/verify-song-previews.mjs"
 "$PROJECT_ROOT/tools/build-web.sh"
 
 INDEX="$WEB_DIR/index.html"
@@ -42,6 +44,10 @@ if printf '%s\n' "$ZIP_LIST" | grep -Eq '\.(ts|d\.ts)$'; then
   echo "error: TypeScript source must not be included in the zip" >&2
   exit 1
 fi
+if printf '%s\n' "$ZIP_LIST" | grep -Eiq '\.(mp3|ogg|wav)$'; then
+  echo "error: Builda host audio must stay in the external assets zip" >&2
+  exit 1
+fi
 
 ART_CONFIG="$WEB_DIR/assets/texture/config.json"
 if [ ! -f "$ART_CONFIG" ]; then
@@ -49,20 +55,20 @@ if [ ! -f "$ART_CONFIG" ]; then
   exit 1
 fi
 ART_COUNT=0
-for ART_NAME in BackGround logo menuLogo todayTaskPanel songSelectPanel startBtn settingBtn rankBtn helpBtn leftArrow downArrow upArrow rightArrow leftArrow2 downArrow2 upArrow2 rightArrow2 gameplayDancer discoBall danceBtnA pauseBtn stonePanel perfectBadge starFilled starEmpty; do
+for ART_NAME in BackGround logo menuLogo todayTaskPanel songSelectPanel startBtn settingBtn rankBtn helpBtn leftArrow downArrow upArrow rightArrow leftArrow2 downArrow2 upArrow2 rightArrow2 gameplayDancer discoBall danceBtnA pauseBtn stonePanel perfectBadge starFilled starEmpty songPreviewPlay songPreviewPause songRowSelected songRowIdle; do
   if ! grep -q "\"$ART_NAME\"" "$ART_CONFIG"; then
     echo "error: runtime texture bundle is missing $ART_NAME" >&2
     exit 1
   fi
   ART_COUNT=$((ART_COUNT + 1))
 done
-if [ "$ART_COUNT" -ne 25 ]; then
-  echo "error: expected 25 audited runtime art entries, found $ART_COUNT" >&2
+if [ "$ART_COUNT" -ne 29 ]; then
+  echo "error: expected 29 audited runtime art entries, found $ART_COUNT" >&2
   exit 1
 fi
 CONFIG_ART_COUNT=$(jq '[.paths[] | select(.[1] == 0)] | length' "$ART_CONFIG")
-if [ "$CONFIG_ART_COUNT" -ne 25 ]; then
-  echo "error: expected texture config to contain exactly 25 runtime textures, found $CONFIG_ART_COUNT" >&2
+if [ "$CONFIG_ART_COUNT" -ne 29 ]; then
+  echo "error: expected texture config to contain exactly 29 runtime textures, found $CONFIG_ART_COUNT" >&2
   exit 1
 fi
 
@@ -123,9 +129,34 @@ if find "$WEB_DIR/assets" -type f -name 'config.json' -exec grep -Eq '主界面|
   exit 1
 fi
 
+rm -f "$ASSETS_ZIP_PATH"
+(cd "$PROJECT_ROOT/assets" && zip -q -r "$ASSETS_ZIP_PATH" audio -x '*.DS_Store' '*.meta')
+ASSETS_ZIP_LIST=$(unzip -Z1 "$ASSETS_ZIP_PATH")
+AUDIO_FILE_COUNT=0
+for ASSET_ENTRY in $ASSETS_ZIP_LIST; do
+  case "$ASSET_ENTRY" in
+    audio/|audio/bgm/)
+      ;;
+    audio/bgm/neon-grid-demo-preview.wav|audio/bgm/golden-stampede-demo-preview.wav)
+      AUDIO_FILE_COUNT=$((AUDIO_FILE_COUNT + 1))
+      ;;
+    *)
+      echo "error: unexpected file in Builda assets zip: $ASSET_ENTRY" >&2
+      exit 1
+      ;;
+  esac
+done
+if [ "$AUDIO_FILE_COUNT" -ne 2 ]; then
+  echo "error: expected exactly two audited preview tracks in Builda assets zip" >&2
+  exit 1
+fi
+
 "$PROJECT_ROOT/.builda-agent/builda" bundle-check --webview-compatible "$ZIP_PATH"
+"$PROJECT_ROOT/.builda-agent/builda" assets check "$ASSETS_ZIP_PATH"
 echo "builda-verify=ok"
 echo "runtime-art-count=$CONFIG_ART_COUNT"
 echo "dancer-clips=$DANCER_CLIP_COUNT"
 echo "dancer-bundle-bytes=$DANCER_BYTES"
 echo "bundle=$ZIP_PATH"
+echo "assets-audio-files=$AUDIO_FILE_COUNT"
+echo "assets-bundle=$ASSETS_ZIP_PATH"
