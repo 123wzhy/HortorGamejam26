@@ -12,7 +12,12 @@ export interface RhythmVerticalLayout {
     buttonTop: number;
     globalLineY: number;
     progressLabelY: number;
+    progressLabelHeight: number;
     instructionLabelY: number;
+    instructionLabelHeight: number;
+    timelineHalfHeight: number;
+    textTimelineGap: number;
+    timingPanelPadding: number;
     showTimelineBar: boolean;
     showProgressLabel: boolean;
     showInstruction: boolean;
@@ -29,6 +34,26 @@ export interface RhythmVerticalLayout {
     safeBottomApplied: number;
     safeInsetsClamped: boolean;
     hudBottom: number;
+}
+
+export interface MenuHintHorizontalLayoutInput {
+    availableWidth: number;
+}
+
+export interface MenuHintHorizontalLayout {
+    scale: number;
+    arrowWidth: number;
+    arrowHeight: number;
+    arrowCenters: number[];
+    arrowsLeft: number;
+    arrowsRight: number;
+    textX: number;
+    textLeft: number;
+    textRight: number;
+    textWidth: number;
+    groupGap: number;
+    panelWidth: number;
+    panelHeight: number;
 }
 
 export interface NoteChipVerticalLayout {
@@ -89,6 +114,70 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 /**
+ * Lays out the four direction icons and the keyboard hint as two explicit
+ * horizontal groups. Scaling is uniform, so icon artwork keeps its aspect
+ * ratio while the text can never intrude into the icon bounds.
+ */
+export function calculateMenuHintHorizontalLayout(
+    input: MenuHintHorizontalLayoutInput
+): MenuHintHorizontalLayout {
+    const availableWidth = Math.max(240, finiteOr(input.availableWidth, 960));
+    const arrowCount = 4;
+    const naturalArrowWidth = 54;
+    const naturalArrowHeight = 54 / (73 / 71);
+    const naturalArrowGap = 4;
+    const naturalTextWidth = 236;
+    const naturalGroupGap = 18;
+    const naturalPanelPadding = 16;
+    const naturalArrowGroupWidth = arrowCount * naturalArrowWidth
+        + (arrowCount - 1) * naturalArrowGap;
+    const naturalContentWidth = naturalArrowGroupWidth + naturalGroupGap + naturalTextWidth;
+    const scale = Math.min(1, Math.max(
+        0.48,
+        (availableWidth - naturalPanelPadding * 2) / naturalContentWidth
+    ));
+    const arrowWidth = naturalArrowWidth * scale;
+    const arrowHeight = naturalArrowHeight * scale;
+    const arrowGap = naturalArrowGap * scale;
+    const textWidth = naturalTextWidth * scale;
+    const groupGap = naturalGroupGap * scale;
+    const arrowGroupWidth = arrowCount * arrowWidth + (arrowCount - 1) * arrowGap;
+    const contentWidth = arrowGroupWidth + groupGap + textWidth;
+    const arrowsLeft = -contentWidth * 0.5;
+    const arrowCenters: number[] = [];
+    for (let index = 0; index < arrowCount; index += 1) {
+        arrowCenters.push(arrowsLeft + arrowWidth * 0.5 + index * (arrowWidth + arrowGap));
+    }
+    const arrowsRight = arrowsLeft + arrowGroupWidth;
+    const textLeft = arrowsRight + groupGap;
+    const textRight = textLeft + textWidth;
+    const panelPadding = naturalPanelPadding * scale;
+
+    return {
+        scale,
+        arrowWidth,
+        arrowHeight,
+        arrowCenters,
+        arrowsLeft,
+        arrowsRight,
+        textX: textLeft + textWidth * 0.5,
+        textLeft,
+        textRight,
+        textWidth,
+        groupGap,
+        panelWidth: contentWidth + panelPadding * 2,
+        panelHeight: arrowHeight + 12 * scale
+    };
+}
+
+/** Portrait is unsupported by the landscape-only manifest, so it gets a guard. */
+export function shouldShowLandscapeRotation(frameWidth: number, frameHeight: number): boolean {
+    const width = Math.max(1, finiteOr(frameWidth, 1));
+    const height = Math.max(1, finiteOr(frameHeight, 1));
+    return height > width;
+}
+
+/**
  * Anchors the menu footer from the lower safe-area edge and allocates each
  * vertical layer by its real bounds. This keeps scaled button artwork, status
  * text and the two card panels separated at both supported viewport heights.
@@ -100,7 +189,7 @@ export function calculateMenuFooterVerticalLayout(
     const safeBottom = Math.max(0, finiteOr(input.safeBottom, 0));
     const startButtonScale = Math.max(0, finiteOr(input.startButtonScale, 1));
     const startButtonHeight = Math.max(0, finiteOr(input.startButtonHeight, 145)) * startButtonScale;
-    const statusLabelHeight = 24;
+    const statusLabelHeight = 32;
     const buttonStatusGap = 10;
     const statusCardGap = 12;
     const hintY = -viewportHeight * 0.5 + safeBottom + 40;
@@ -174,16 +263,22 @@ export function calculateRhythmVerticalLayout(input: RhythmVerticalLayoutInput):
     const halfHeight = viewportHeight * 0.5;
     const minimumPanelHeight = 118;
     const controlBottomMargin = 14;
-    const timelineCenterAboveButtons = 18;
     const timelineHalfHeight = 10;
+    const progressLabelHeight = 28;
+    const instructionLabelHeight = 22;
+    const textTimelineGap = 4;
+    const timingPanelPadding = 6;
+    const buttonTimingGap = 8;
     const layerGap = 12;
     const judgementCenterOffset = compact ? 67 : 76;
     const judgementHalfHeight = 19;
 
     const buttonHeight = 84 * directionPadScale;
     const hudPanelOffset = 25 + judgementCenterOffset + judgementHalfHeight + layerGap;
+    const minimumTimingBlockHeightAboveButtons = buttonTimingGap
+        + timingPanelPadding * 2 + timelineHalfHeight * 2;
     const coreStackWithoutInsets = controlBottomMargin + buttonHeight
-        + timelineCenterAboveButtons + timelineHalfHeight + layerGap + minimumPanelHeight;
+        + minimumTimingBlockHeightAboveButtons + layerGap + minimumPanelHeight;
     const totalInsetBudget = Math.max(0, viewportHeight - hudPanelOffset - coreStackWithoutInsets);
     const safeTopApplied = Math.min(requestedSafeTop, totalInsetBudget);
     const safeBottomBudget = Math.max(0, totalInsetBudget - safeTopApplied);
@@ -209,20 +304,35 @@ export function calculateRhythmVerticalLayout(input: RhythmVerticalLayoutInput):
 
     let showProgressLabel = true;
     let showInstruction = true;
-    let globalLineY = buttonTop + 36;
-    let progressLabelY = globalLineY + 22;
-    let instructionLabelY = globalLineY - 17;
-    let globalBlockTop = progressLabelY + 12;
-    let globalBlockBottom = instructionLabelY - 11;
+    let globalLineY = 0;
+    let progressLabelY = 0;
+    let instructionLabelY = 0;
+    let globalBlockTop = 0;
+    let globalBlockBottom = 0;
+
+    const updateTimingBlock = (): void => {
+        globalLineY = showInstruction
+            ? buttonTop + buttonTimingGap + timingPanelPadding + instructionLabelHeight
+                + textTimelineGap + timelineHalfHeight
+            : buttonTop + buttonTimingGap + timingPanelPadding + timelineHalfHeight;
+        progressLabelY = globalLineY + timelineHalfHeight + textTimelineGap
+            + progressLabelHeight * 0.5;
+        instructionLabelY = globalLineY - timelineHalfHeight - textTimelineGap
+            - instructionLabelHeight * 0.5;
+        globalBlockTop = showProgressLabel
+            ? progressLabelY + progressLabelHeight * 0.5 + timingPanelPadding
+            : globalLineY + timelineHalfHeight + timingPanelPadding;
+        globalBlockBottom = showInstruction
+            ? instructionLabelY - instructionLabelHeight * 0.5 - timingPanelPadding
+            : globalLineY - timelineHalfHeight - timingPanelPadding;
+    };
+
+    updateTimingBlock();
     let panelBottom = Math.max(preferredPanelBottom, globalBlockTop + layerGap);
 
     if (maximumPanelTopWithStage - panelBottom < minimumPanelHeight) {
         showInstruction = false;
-        globalLineY = buttonTop + timelineCenterAboveButtons;
-        progressLabelY = globalLineY + 22;
-        instructionLabelY = globalLineY - 17;
-        globalBlockTop = progressLabelY + 12;
-        globalBlockBottom = globalLineY - timelineHalfHeight;
+        updateTimingBlock();
         panelBottom = Math.max(preferredPanelBottom, globalBlockTop + layerGap);
     }
 
@@ -240,12 +350,28 @@ export function calculateRhythmVerticalLayout(input: RhythmVerticalLayoutInput):
     let showStage = availablePanelHeight >= minimumPanelHeight
         && stageBaseY >= panelTop + stagePanelClearance;
 
+    if (!showStage && showInstruction) {
+        showInstruction = false;
+        updateTimingBlock();
+        panelBottom = Math.max(preferredPanelBottom, globalBlockTop + layerGap);
+        availablePanelHeight = maximumPanelTopWithStage - panelBottom;
+        panelHeight = Math.min(preferredPanelHeight, Math.max(minimumPanelHeight, availablePanelHeight));
+        panelTop = panelBottom + panelHeight;
+        panelY = panelBottom + panelHeight * 0.5;
+        desiredStageBaseY = panelTop + (compact ? 49 : 70);
+        stageBaseY = Math.min(
+            desiredStageBaseY,
+            judgementBottom - (compact ? 42 : 58)
+        );
+        showStage = availablePanelHeight >= minimumPanelHeight
+            && stageBaseY >= panelTop + stagePanelClearance;
+    }
+
     if (!showStage) {
         availablePanelHeight = maximumPanelTopWithoutStage - panelBottom;
         if (availablePanelHeight < minimumPanelHeight) {
             showProgressLabel = false;
-            globalBlockTop = globalLineY + timelineHalfHeight;
-            globalBlockBottom = globalLineY - timelineHalfHeight;
+            updateTimingBlock();
             panelBottom = Math.max(preferredPanelBottom, globalBlockTop + layerGap);
             availablePanelHeight = maximumPanelTopWithoutStage - panelBottom;
         }
@@ -263,7 +389,12 @@ export function calculateRhythmVerticalLayout(input: RhythmVerticalLayoutInput):
         buttonTop,
         globalLineY,
         progressLabelY,
+        progressLabelHeight,
         instructionLabelY,
+        instructionLabelHeight,
+        timelineHalfHeight,
+        textTimelineGap,
+        timingPanelPadding,
         showTimelineBar: true,
         showProgressLabel,
         showInstruction,

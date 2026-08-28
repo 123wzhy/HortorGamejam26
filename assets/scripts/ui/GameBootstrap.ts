@@ -30,8 +30,10 @@ import { DancerAnimationController } from "./DancerAnimationController";
 import {
     calculateMenuCardVerticalLayout,
     calculateMenuFooterVerticalLayout,
+    calculateMenuHintHorizontalLayout,
     calculateNoteChipVerticalLayout,
-    calculateRhythmVerticalLayout
+    calculateRhythmVerticalLayout,
+    shouldShowLandscapeRotation
 } from "./RhythmLayout";
 import { SongPreviewController, SongPreviewSnapshot } from "./SongPreviewController";
 import {
@@ -63,6 +65,7 @@ const NOTE_APPROACH_MS = 1200;
 const DIRECTIONS: Direction[] = ["left", "down", "up", "right"];
 const SMALL_ARROW_ASPECT = 73 / 71;
 const TOUCH_ARROW_ASPECT = 142 / 146;
+const UI_FONT_FAMILY = "PingFang SC, Microsoft YaHei, Arial, sans-serif";
 
 function browserLocalLeaderboardStorage(): LocalLeaderboardStorage | null {
     try {
@@ -114,6 +117,18 @@ interface SongRowView {
     songIndex: number;
 }
 
+interface TaskRowView {
+    marker: cc.Label;
+    title: cc.Label;
+    value: cc.Label;
+}
+
+interface SlicedPanelView {
+    node: cc.Node;
+    sprite: cc.Sprite;
+    fallback: cc.Graphics;
+}
+
 @ccclass
 export default class GameBootstrap extends cc.Component {
     private readonly adapter: BuildaAdapter = new BuildaAdapter();
@@ -150,7 +165,7 @@ export default class GameBootstrap extends cc.Component {
     private menuTaskArtwork: cc.Node = null;
     private menuTaskGraphics: cc.Graphics = null;
     private menuTaskTitle: cc.Label = null;
-    private menuTaskLabel: cc.Label = null;
+    private menuTaskRows: TaskRowView[] = [];
     private menuSongPanel: cc.Node = null;
     private menuSongArtwork: cc.Node = null;
     private menuSongGraphics: cc.Graphics = null;
@@ -159,7 +174,11 @@ export default class GameBootstrap extends cc.Component {
     private menuSongRows: SongRowView[] = [];
     private menuSongStatusLabel: cc.Label = null;
     private menuHintRow: cc.Node = null;
+    private menuHintPanel: SlicedPanelView = null;
     private menuHintArrows: cc.Node[] = [];
+    private menuHintLabel: cc.Label = null;
+    private menuStatusPanel: cc.Node = null;
+    private menuStatusGraphics: cc.Graphics = null;
     private menuStatusLabel: cc.Label = null;
     private infoOverlay: cc.Node = null;
     private infoBackdrop: cc.Graphics = null;
@@ -172,6 +191,7 @@ export default class GameBootstrap extends cc.Component {
     private dancerController: DancerAnimationController | null = null;
     private groupPanel: cc.Graphics = null;
     private sequenceRow: cc.Node = null;
+    private timingPanel: SlicedPanelView = null;
     private globalTimeline: cc.Graphics = null;
     private scoreLabel: cc.Label = null;
     private comboLabel: cc.Label = null;
@@ -187,6 +207,9 @@ export default class GameBootstrap extends cc.Component {
     private homeButton: cc.Node = null;
     private directionButtons: cc.Node[] = [];
     private noteChipViews: NoteChipView[] = [];
+    private orientationGuard: cc.Node = null;
+    private orientationBackdrop: cc.Graphics = null;
+    private orientationLabel: cc.Label = null;
 
     private viewportWidth: number = 1280;
     private viewportHeight: number = 720;
@@ -219,6 +242,7 @@ export default class GameBootstrap extends cc.Component {
     private lastResultColor: cc.Color = null;
     private messageExpiresAtMs: number = 0;
     private resizeHandler: (() => void) | null = null;
+    private resizeTimer: number | null = null;
     private visibilityHandler: (() => void) | null = null;
     private pageHideHandler: (() => void) | null = null;
     private pageShowHandler: (() => void) | null = null;
@@ -307,6 +331,8 @@ export default class GameBootstrap extends cc.Component {
             this.applySpriteFrame(this.menuHintArrows[index], this.art.get(DIRECTION_ART[direction]));
             this.applyButtonFrame(this.directionButtons[index], this.art.get(DIRECTION_TOUCH_ART[direction]));
         });
+        this.applySlicedPanelFrame(this.menuHintPanel, this.art.get("stonePanel"));
+        this.applySlicedPanelFrame(this.timingPanel, this.art.get("stonePanel"));
         this.applyArtworkFrame(this.menuTaskArtwork, this.art.get("todayTaskPanel"));
         this.applyArtworkFrame(this.menuSongArtwork, this.art.get("songSelectPanel"));
         this.menuSongRows.forEach((view) => this.bindSongRowBackgroundFrames(view));
@@ -336,6 +362,10 @@ export default class GameBootstrap extends cc.Component {
         cc.game.off(cc.game.EVENT_HIDE, this.onGameHide, this);
         cc.game.off(cc.game.EVENT_SHOW, this.onGameShow, this);
         if (typeof window !== "undefined") {
+            if (this.resizeTimer !== null) {
+                window.clearTimeout(this.resizeTimer);
+                this.resizeTimer = null;
+            }
             if (this.resizeHandler) {
                 window.removeEventListener("resize", this.resizeHandler);
             }
@@ -390,6 +420,7 @@ export default class GameBootstrap extends cc.Component {
         this.node.removeAllChildren();
         this.menuTopButtons = [];
         this.menuHintArrows = [];
+        this.menuTaskRows = [];
         this.menuSongRows = [];
         this.directionButtons = [];
         this.noteChipViews = [];
@@ -479,16 +510,18 @@ export default class GameBootstrap extends cc.Component {
             20,
             cc.color(255, 183, 55)
         );
-        this.menuTaskLabel = this.makeLabel(
-            this.menuTaskPanel,
-            "TodayTaskText",
-            "·  完成 3 组舞步        0/3\n"
-            + "·  获得 8000 分      0/8000\n"
-            + "·  连击达到 10 次    0/10",
-            16,
-            cc.color(255, 239, 204)
-        );
-        this.menuTaskLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+        [
+            { title: "完成 3 组舞步", value: "0/3" },
+            { title: "获得 8000 分", value: "0/8000" },
+            { title: "连击达到 10 次", value: "0/10" }
+        ].forEach((task, index) => {
+            this.menuTaskRows.push(this.makeTaskRow(
+                this.menuTaskPanel,
+                "TodayTaskRow-" + (index + 1),
+                task.title,
+                task.value
+            ));
+        });
 
         this.menuSongPanel = new cc.Node("SongPanel");
         this.menuSongPanel.parent = this.menuRoot;
@@ -521,6 +554,11 @@ export default class GameBootstrap extends cc.Component {
 
         this.menuHintRow = new cc.Node("ControlHint");
         this.menuHintRow.parent = this.menuRoot;
+        this.menuHintPanel = this.makeSlicedPanel(
+            this.menuHintRow,
+            "ControlHintPanel",
+            this.art.get("stonePanel")
+        );
         DIRECTIONS.forEach((direction, index) => {
             const arrow = this.makeSpriteNode(
                 this.menuHintRow,
@@ -530,26 +568,29 @@ export default class GameBootstrap extends cc.Component {
                 54 / SMALL_ARROW_ASPECT,
                 ARROW_TEXT[direction]
             );
-            arrow.x = (index - 2.2) * 58;
             this.menuHintArrows.push(arrow);
         });
-        const hintLabel = this.makeLabel(
+        this.menuHintLabel = this.makeLabel(
             this.menuHintRow,
             "HintText",
-            "+  WASD    跟随节拍输入方向",
-            17,
+            "WASD · 跟随节拍输入方向",
+            18,
             cc.color(255, 239, 204)
         );
-        hintLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
-        hintLabel.node.setContentSize(310, 54);
-        hintLabel.node.setPosition(112, 0);
+        this.menuHintLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+        this.addReadableOutline(this.menuHintLabel, 2);
+
+        this.menuStatusPanel = new cc.Node("MenuStatusPanel");
+        this.menuStatusPanel.parent = this.menuRoot;
+        this.menuStatusGraphics = this.menuStatusPanel.addComponent(cc.Graphics);
         this.menuStatusLabel = this.makeLabel(
-            this.menuRoot,
+            this.menuStatusPanel,
             "MenuStatus",
             startupStatusText(this.startupState),
-            14,
+            16,
             cc.color(255, 224, 139)
         );
+        this.addReadableOutline(this.menuStatusLabel, 2);
 
         const stageNode = new cc.Node("OriginalStage");
         stageNode.parent = this.gameRoot;
@@ -566,27 +607,44 @@ export default class GameBootstrap extends cc.Component {
         panelNode.parent = this.gameRoot;
         this.groupPanel = panelNode.addComponent(cc.Graphics);
 
-        this.levelLabel = this.makeLabel(this.gameRoot, "Level", "节拍训练场", 18, cc.color(255, 239, 204));
+        this.timingPanel = this.makeSlicedPanel(
+            this.gameRoot,
+            "TimingFeedbackPanel",
+            this.art.get("stonePanel")
+        );
+
+        this.levelLabel = this.makeLabel(this.gameRoot, "Level", "节拍训练场", 20, cc.color(255, 239, 204));
         this.trackLabel = this.makeLabel(
             this.gameRoot,
             "Track",
             DEMO_SONGS[0].beatmap.title,
-            14,
+            16,
             cc.color(255, 207, 82)
         );
-        this.hostLabel = this.makeLabel(this.gameRoot, "Host", "正在初始化", 11, cc.color(255, 224, 139));
-        this.scoreLabel = this.makeLabel(this.gameRoot, "Score", "得分\n000000", 31, cc.color(255, 248, 225));
-        this.judgementLabel = this.makeLabel(this.gameRoot, "Judgement", "等待第一键", 23, cc.color(255, 207, 82));
-        this.comboLabel = this.makeLabel(this.gameRoot, "Combo", "连击 0\n最高 0", 21, cc.color(255, 207, 82));
-        this.groupLabel = this.makeLabel(this.gameRoot, "Group", "组合 1 / 8", 15, cc.color(238, 220, 183));
-        this.progressLabel = this.makeLabel(this.gameRoot, "Progress", "谱面 0% · 等待开始", 13, cc.color(238, 220, 183));
+        this.hostLabel = this.makeLabel(this.gameRoot, "Host", "正在初始化", 13, cc.color(255, 224, 139));
+        this.scoreLabel = this.makeLabel(this.gameRoot, "Score", "得分\n000000", 32, cc.color(255, 248, 225));
+        this.judgementLabel = this.makeLabel(this.gameRoot, "Judgement", "等待第一键", 25, cc.color(255, 207, 82));
+        this.comboLabel = this.makeLabel(this.gameRoot, "Combo", "连击 0\n最高 0", 22, cc.color(255, 207, 82));
+        this.groupLabel = this.makeLabel(this.gameRoot, "Group", "组合 1 / 8", 17, cc.color(238, 220, 183));
+        this.progressLabel = this.makeLabel(this.gameRoot, "Progress", "谱面 0% · 等待开始", 18, cc.color(255, 239, 204));
         this.instructionLabel = this.makeLabel(
             this.gameRoot,
             "Instruction",
-            "方向键 / WASD · 在每个箭头的目标时刻直接输入",
-            13,
-            cc.color(218, 194, 146)
+            "方向键 / WASD · 在箭头目标时刻输入",
+            16,
+            cc.color(238, 220, 183)
         );
+        [
+            this.levelLabel,
+            this.trackLabel,
+            this.hostLabel,
+            this.scoreLabel,
+            this.judgementLabel,
+            this.comboLabel,
+            this.groupLabel,
+            this.progressLabel,
+            this.instructionLabel
+        ].forEach((label) => this.addReadableOutline(label, 2));
 
         this.sequenceRow = new cc.Node("GroupNotes");
         this.sequenceRow.parent = this.gameRoot;
@@ -658,6 +716,23 @@ export default class GameBootstrap extends cc.Component {
         );
         closeButton.setPosition(0, -126);
         this.infoOverlay.active = false;
+
+        this.orientationGuard = new cc.Node("LandscapeOrientationGuard");
+        this.orientationGuard.parent = this.root;
+        this.assignRenderGroup(this.orientationGuard, hudGroupIndex);
+        this.orientationGuard.addComponent(cc.BlockInputEvents);
+        const orientationBackdropNode = new cc.Node("Backdrop");
+        orientationBackdropNode.parent = this.orientationGuard;
+        this.orientationBackdrop = orientationBackdropNode.addComponent(cc.Graphics);
+        this.orientationLabel = this.makeLabel(
+            this.orientationGuard,
+            "Message",
+            "请旋转设备\n本游戏仅支持横屏",
+            30,
+            cc.color(255, 239, 204)
+        );
+        this.addReadableOutline(this.orientationLabel, 3);
+        this.orientationGuard.active = false;
     }
 
     private layout(): void {
@@ -669,6 +744,11 @@ export default class GameBootstrap extends cc.Component {
         this.viewportHeight = Math.max(540, visible.height || 720);
         this.metrics = this.adapter.viewportMetrics(this.viewportWidth, this.viewportHeight);
         this.root.setContentSize(this.viewportWidth, this.viewportHeight);
+        const frameSize = cc.view.getFrameSize();
+        const showOrientationGuard = shouldShowLandscapeRotation(
+            frameSize && frameSize.width,
+            frameSize && frameSize.height
+        );
 
         const halfWidth = this.viewportWidth * 0.5;
         const halfHeight = this.viewportHeight * 0.5;
@@ -692,6 +772,7 @@ export default class GameBootstrap extends cc.Component {
         this.layoutBackground();
         this.layoutMenu(contentWidth, contentCenterX);
         this.layoutInfoOverlay();
+        this.layoutOrientationGuard(showOrientationGuard);
         this.drawStage();
         this.drawGroupPanel();
 
@@ -749,12 +830,20 @@ export default class GameBootstrap extends cc.Component {
         this.directionPad.setPosition(contentCenterX, vertical.controlsY);
         this.directionPad.scale = padScale;
 
+        const timingPanelWidth = Math.max(320, this.globalBarWidth + 36);
+        const timingPanelHeight = vertical.globalBlockTop - vertical.globalBlockBottom;
+        this.layoutSlicedPanel(this.timingPanel, timingPanelWidth, timingPanelHeight);
+        this.timingPanel.node.setPosition(
+            contentCenterX,
+            (vertical.globalBlockTop + vertical.globalBlockBottom) * 0.5
+        );
+        this.timingPanel.node.active = vertical.showTimelineBar;
         this.globalTimeline.node.setPosition(contentCenterX, vertical.globalLineY);
         this.globalTimeline.node.active = vertical.showTimelineBar;
-        this.progressLabel.node.setContentSize(this.globalBarWidth, 24);
+        this.progressLabel.node.setContentSize(this.globalBarWidth, vertical.progressLabelHeight);
         this.progressLabel.node.setPosition(contentCenterX, vertical.progressLabelY);
         this.progressLabel.node.active = vertical.showProgressLabel;
-        this.instructionLabel.node.setContentSize(this.globalBarWidth, 22);
+        this.instructionLabel.node.setContentSize(this.globalBarWidth, vertical.instructionLabelHeight);
         this.instructionLabel.node.setPosition(contentCenterX, vertical.instructionLabelY);
         this.instructionLabel.node.active = vertical.showInstruction;
 
@@ -837,11 +926,26 @@ export default class GameBootstrap extends cc.Component {
         this.menuStartButton.scale = startScale;
         this.menuStartButton.setPosition(contentCenterX, footer.startY);
         this.menuHintRow.setPosition(contentCenterX, footer.hintY);
-        this.menuStatusLabel.node.setContentSize(
-            Math.min(620, contentWidth - 40),
-            footer.statusLabelHeight
-        );
-        this.menuStatusLabel.node.setPosition(contentCenterX, footer.statusY);
+        const hint = calculateMenuHintHorizontalLayout({
+            availableWidth: Math.min(620, contentWidth - 32)
+        });
+        this.menuHintRow.setContentSize(hint.panelWidth, hint.panelHeight);
+        this.layoutSlicedPanel(this.menuHintPanel, hint.panelWidth, hint.panelHeight);
+        this.menuHintArrows.forEach((arrow, index) => {
+            arrow.scale = hint.scale;
+            arrow.setPosition(hint.arrowCenters[index], 0);
+        });
+        this.menuHintLabel.fontSize = Math.max(14, Math.round(18 * hint.scale));
+        this.menuHintLabel.lineHeight = Math.round(this.menuHintLabel.fontSize * 1.2);
+        this.menuHintLabel.node.setContentSize(hint.textWidth, hint.panelHeight);
+        this.menuHintLabel.node.setPosition(hint.textX, 0);
+
+        const statusWidth = Math.min(640, contentWidth - 40);
+        this.menuStatusPanel.setContentSize(statusWidth, footer.statusLabelHeight);
+        this.menuStatusPanel.setPosition(contentCenterX, footer.statusY);
+        this.drawStatusPanel(this.menuStatusGraphics, statusWidth, footer.statusLabelHeight);
+        this.menuStatusLabel.node.setContentSize(statusWidth - 24, footer.statusLabelHeight - 4);
+        this.menuStatusLabel.node.setPosition(0, 0);
 
         const panelAspect = 696 / 565;
         const preferredCardWidth = Math.min(310, contentWidth * 0.28);
@@ -899,12 +1003,38 @@ export default class GameBootstrap extends cc.Component {
             title.node.setPosition(0, fallbackTitleY);
         });
 
-        const bodyFontSize = Math.max(12, Math.min(16, cardHeight * 0.075));
-        this.menuTaskLabel.fontSize = bodyFontSize;
-        this.menuTaskLabel.lineHeight = Math.max(25, Math.round(cardHeight * 0.19));
-        this.menuTaskLabel.node.setContentSize(Math.max(96, cardWidth - 42), cardHeight * 0.66);
-        this.menuTaskLabel.node.setPosition(0, -cardHeight * 0.1);
+        this.layoutTaskRows(cardWidth, cardHeight);
         this.layoutSongRows(cardWidth, cardHeight);
+    }
+
+    private layoutTaskRows(cardWidth: number, cardHeight: number): void {
+        const innerWidth = Math.max(92, cardWidth - 42);
+        const rowHeight = Math.max(20, Math.min(36, cardHeight * 0.17));
+        const rowGap = Math.max(22, cardHeight * 0.19);
+        const firstRowY = cardHeight * 0.1;
+        const markerWidth = Math.max(18, Math.min(24, innerWidth * 0.1));
+        const valueWidth = Math.max(46, Math.min(92, innerWidth * 0.34));
+        const columnGap = Math.max(4, cardWidth * 0.018);
+        const left = -innerWidth * 0.5;
+        const titleLeft = left + markerWidth + columnGap;
+        const valueRight = innerWidth * 0.5;
+        const titleRight = valueRight - valueWidth - columnGap;
+        const titleWidth = Math.max(42, titleRight - titleLeft);
+        const fontSize = Math.max(12, Math.min(17, cardHeight * 0.075));
+
+        this.menuTaskRows.forEach((row, index) => {
+            const y = firstRowY - index * rowGap;
+            [row.marker, row.title, row.value].forEach((label) => {
+                label.fontSize = fontSize;
+                label.lineHeight = Math.round(fontSize * 1.2);
+            });
+            row.marker.node.setContentSize(markerWidth, rowHeight);
+            row.marker.node.setPosition(left + markerWidth * 0.5, y);
+            row.title.node.setContentSize(titleWidth, rowHeight);
+            row.title.node.setPosition(titleLeft + titleWidth * 0.5, y);
+            row.value.node.setContentSize(valueWidth, rowHeight);
+            row.value.node.setPosition(valueRight - valueWidth * 0.5, y);
+        });
     }
 
     private layoutSongRows(cardWidth: number, cardHeight: number): void {
@@ -932,8 +1062,8 @@ export default class GameBootstrap extends cc.Component {
             const textLeft = -rowWidth * 0.5 + rowHeight * 1.12;
             const textRight = rowWidth * 0.5 - starsWidth - 13;
             const textWidth = Math.max(60, textRight - textLeft);
-            view.title.fontSize = Math.max(9, Math.min(12, rowHeight * 0.245));
-            view.title.lineHeight = Math.max(11, Math.round(view.title.fontSize * 1.12));
+            view.title.fontSize = Math.max(11, Math.min(13, rowHeight * 0.27));
+            view.title.lineHeight = Math.max(12, Math.round(view.title.fontSize * 1.12));
             view.title.node.setContentSize(textWidth, rowHeight - 8);
             view.title.node.setPosition(textLeft + textWidth * 0.5, 0);
 
@@ -944,11 +1074,42 @@ export default class GameBootstrap extends cc.Component {
             });
         });
 
-        this.menuSongStatusLabel.fontSize = Math.max(9, Math.min(11, cardHeight * 0.05));
+        this.menuSongStatusLabel.fontSize = Math.max(11, Math.min(13, cardHeight * 0.055));
         this.menuSongStatusLabel.lineHeight = Math.round(this.menuSongStatusLabel.fontSize * 1.15);
         this.menuSongStatusLabel.node.setContentSize(Math.max(120, rowWidth), Math.max(22, cardHeight * 0.12));
         this.menuSongStatusLabel.node.setPosition(0, -cardHeight * 0.285);
         this.refreshSongRows();
+    }
+
+    private layoutOrientationGuard(active: boolean): void {
+        if (!this.orientationGuard) {
+            return;
+        }
+        this.orientationGuard.active = active;
+        if (!active) {
+            return;
+        }
+        this.orientationGuard.setSiblingIndex(this.root.childrenCount - 1);
+        this.orientationGuard.setContentSize(this.viewportWidth, this.viewportHeight);
+        this.orientationBackdrop.clear();
+        this.orientationBackdrop.fillColor = cc.color(12, 10, 8, 252);
+        this.orientationBackdrop.rect(
+            -this.viewportWidth * 0.5,
+            -this.viewportHeight * 0.5,
+            this.viewportWidth,
+            this.viewportHeight
+        );
+        this.orientationBackdrop.fill();
+        const panelWidth = Math.min(720, this.viewportWidth - 80);
+        this.orientationBackdrop.fillColor = cc.color(42, 31, 18, 248);
+        this.orientationBackdrop.roundRect(-panelWidth * 0.5, -78, panelWidth, 156, 24);
+        this.orientationBackdrop.fill();
+        this.orientationBackdrop.strokeColor = cc.color(255, 183, 55, 240);
+        this.orientationBackdrop.lineWidth = 4;
+        this.orientationBackdrop.roundRect(-panelWidth * 0.5, -78, panelWidth, 156, 24);
+        this.orientationBackdrop.stroke();
+        this.orientationLabel.node.setContentSize(panelWidth - 48, 126);
+        this.orientationLabel.node.setPosition(0, 0);
     }
 
     private makeSongRow(parent: cc.Node, songIndex: number): SongRowView {
@@ -980,6 +1141,8 @@ export default class GameBootstrap extends cc.Component {
         );
         const title = this.makeLabel(node, "Title", "", 12, cc.color(255, 239, 204));
         title.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+        title.enableWrapText = false;
+        title.overflow = cc.Label.Overflow.SHRINK;
         const stars: cc.Node[] = [];
         for (let starIndex = 0; starIndex < MAX_DIFFICULTY_STARS; starIndex += 1) {
             stars.push(this.makeSpriteNode(
@@ -1020,6 +1183,23 @@ export default class GameBootstrap extends cc.Component {
     private bindSongRowBackgroundFrames(view: SongRowView): void {
         view.idleBackground.spriteFrame = this.art.get("songRowIdle");
         view.selectedBackground.spriteFrame = this.art.get("songRowSelected");
+    }
+
+    private makeTaskRow(
+        parent: cc.Node,
+        name: string,
+        titleText: string,
+        valueText: string
+    ): TaskRowView {
+        const marker = this.makeLabel(parent, name + "Marker", "·", 16, cc.color(255, 183, 55));
+        const title = this.makeLabel(parent, name + "Title", titleText, 16, cc.color(255, 239, 204));
+        const value = this.makeLabel(parent, name + "Value", valueText, 16, cc.color(255, 224, 139));
+        title.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
+        value.horizontalAlign = cc.Label.HorizontalAlign.RIGHT;
+        this.addReadableOutline(marker, 1);
+        this.addReadableOutline(title, 1);
+        this.addReadableOutline(value, 1);
+        return { marker, title, value };
     }
 
     private selectedSong(): SongDefinition {
@@ -1097,9 +1277,10 @@ export default class GameBootstrap extends cc.Component {
                 view.previewButton,
                 this.art.get(previewActive ? "songPreviewPause" : "songPreviewPlay")
             );
-            view.title.string = song.beatmap.title + "\n"
-                + song.beatmap.bpm + " BPM · " + song.beatmap.groups.length + " 组 · "
-                + beatmapNoteCount(song.beatmap) + " 音符";
+            const displayTitle = song.beatmap.title.replace(/\s*\/\s*ORIGINAL DEMO$/i, "");
+            view.title.string = displayTitle + "\n"
+                + song.beatmap.bpm + "BPM·" + song.beatmap.groups.length + "组·"
+                + beatmapNoteCount(song.beatmap) + "音";
             view.title.node.color = selected ? cc.color(48, 31, 8) : cc.color(255, 239, 204);
             view.stars.forEach((star, starIndex) => {
                 this.applySpriteFrame(
@@ -1248,12 +1429,22 @@ export default class GameBootstrap extends cc.Component {
     private refreshMenuSummary(): void {
         const snapshot = this.engine.getSnapshot();
         const completedGroups = snapshot.finished ? snapshot.groupCount : snapshot.groupIndex;
-        const groupMark = completedGroups >= 3 ? "✓" : "·";
-        const scoreMark = snapshot.score >= 8000 ? "✓" : "·";
-        const comboMark = snapshot.maxCombo >= 10 ? "✓" : "·";
-        this.menuTaskLabel.string = groupMark + "  完成 3 组舞步        " + Math.min(completedGroups, 3) + "/3\n"
-            + scoreMark + "  获得 8000 分      " + snapshot.score + "/8000\n"
-            + comboMark + "  连击达到 10 次    " + snapshot.maxCombo + "/10";
+        const taskState = [
+            { complete: completedGroups >= 3, value: Math.min(completedGroups, 3) + "/3" },
+            { complete: snapshot.score >= 8000, value: snapshot.score + "/8000" },
+            { complete: snapshot.maxCombo >= 10, value: snapshot.maxCombo + "/10" }
+        ];
+        this.menuTaskRows.forEach((row, index) => {
+            const task = taskState[index];
+            if (!task) {
+                return;
+            }
+            row.marker.string = task.complete ? "✓" : "·";
+            row.marker.node.color = task.complete
+                ? cc.color(255, 207, 82)
+                : cc.color(255, 183, 55);
+            row.value.string = task.value;
+        });
     }
 
     private openPlatformSettings(): void {
@@ -1344,7 +1535,7 @@ export default class GameBootstrap extends cc.Component {
         this.lastResultText = "等待第一键";
         this.lastResultColor = cc.color(255, 207, 82);
         this.showTransient("准备", cc.color(255, 207, 82), 800);
-        this.instructionLabel.string = "方向键 / WASD · 在每个箭头的目标时刻直接输入";
+        this.instructionLabel.string = "方向键 / WASD · 在箭头目标时刻输入";
         this.refreshStats();
         this.renderGroup(0);
         this.updateNoteChips(0);
@@ -1475,7 +1666,7 @@ export default class GameBootstrap extends cc.Component {
             this.heldGroupIndex = -1;
             this.groupRenderKey = "";
             this.clockHeldForDanceFlow = false;
-            this.instructionLabel.string = "方向键 / WASD · 在每个箭头的目标时刻直接输入";
+            this.instructionLabel.string = "方向键 / WASD · 在箭头目标时刻输入";
             this.progressLabel.node.color = cc.color(238, 220, 183);
             this.setGroupInputUiVisible(true);
             this.renderGroup(songTimeMs);
@@ -1907,6 +2098,77 @@ export default class GameBootstrap extends cc.Component {
         graphics.stroke();
     }
 
+    private makeSlicedPanel(
+        parent: cc.Node,
+        name: string,
+        frame: cc.SpriteFrame | null
+    ): SlicedPanelView {
+        const node = new cc.Node(name);
+        node.parent = parent;
+        const fallbackNode = new cc.Node("Fallback");
+        fallbackNode.parent = node;
+        const fallback = fallbackNode.addComponent(cc.Graphics);
+        const artworkNode = new cc.Node("Artwork");
+        artworkNode.parent = node;
+        const sprite = artworkNode.addComponent(cc.Sprite);
+        sprite.sizeMode = cc.Sprite.SizeMode.CUSTOM;
+        sprite.type = cc.Sprite.Type.SLICED;
+        const view = { node, sprite, fallback };
+        this.applySlicedPanelFrame(view, frame);
+        return view;
+    }
+
+    private applySlicedPanelFrame(view: SlicedPanelView, frame: cc.SpriteFrame | null): void {
+        if (!view) {
+            return;
+        }
+        view.sprite.spriteFrame = frame;
+        view.sprite.type = cc.Sprite.Type.SLICED;
+        view.sprite.node.active = !!frame;
+        view.fallback.node.active = !frame;
+    }
+
+    private layoutSlicedPanel(view: SlicedPanelView, width: number, height: number): void {
+        if (!view) {
+            return;
+        }
+        view.node.setContentSize(width, height);
+        view.sprite.node.setContentSize(width, height);
+        view.fallback.node.setContentSize(width, height);
+        if (!view.fallback.node.active) {
+            view.fallback.clear();
+            return;
+        }
+        view.fallback.clear();
+        view.fallback.fillColor = cc.color(24, 20, 15, 238);
+        view.fallback.roundRect(-width * 0.5, -height * 0.5, width, height, Math.min(14, height * 0.22));
+        view.fallback.fill();
+        view.fallback.strokeColor = cc.color(255, 183, 55, 220);
+        view.fallback.lineWidth = 3;
+        view.fallback.roundRect(-width * 0.5, -height * 0.5, width, height, Math.min(14, height * 0.22));
+        view.fallback.stroke();
+    }
+
+    private drawStatusPanel(graphics: cc.Graphics, width: number, height: number): void {
+        graphics.clear();
+        graphics.fillColor = cc.color(20, 17, 13, 226);
+        graphics.roundRect(-width * 0.5, -height * 0.5, width, height, height * 0.42);
+        graphics.fill();
+        graphics.strokeColor = cc.color(255, 183, 55, 190);
+        graphics.lineWidth = 2;
+        graphics.roundRect(-width * 0.5, -height * 0.5, width, height, height * 0.42);
+        graphics.stroke();
+    }
+
+    private addReadableOutline(label: cc.Label, width: number): void {
+        if (!label) {
+            return;
+        }
+        const outline = label.node.getComponent(cc.LabelOutline) || label.node.addComponent(cc.LabelOutline);
+        outline.color = cc.color(12, 10, 8, 235);
+        outline.width = width;
+    }
+
     private makeSpriteNode(
         parent: cc.Node,
         name: string,
@@ -1941,6 +2203,7 @@ export default class GameBootstrap extends cc.Component {
             Math.min(34, Math.max(14, height * 0.38)),
             cc.color(255, 239, 204)
         );
+        fallbackLabel.overflow = cc.Label.Overflow.SHRINK;
         fallbackLabel.node.setContentSize(Math.max(20, width - 12), Math.max(20, height - 8));
         fallback.active = !frame;
         return node;
@@ -2063,12 +2326,12 @@ export default class GameBootstrap extends cc.Component {
         node.color = color;
         const label = node.addComponent(cc.Label);
         label.string = text;
-        label.fontFamily = "Arial";
+        label.fontFamily = UI_FONT_FAMILY;
         label.fontSize = fontSize;
         label.lineHeight = Math.round(fontSize * 1.18);
         label.horizontalAlign = cc.Label.HorizontalAlign.CENTER;
         label.verticalAlign = cc.Label.VerticalAlign.CENTER;
-        label.overflow = cc.Label.Overflow.SHRINK;
+        label.overflow = cc.Label.Overflow.CLAMP;
         node.setContentSize(700, Math.max(42, fontSize + 12));
         return label;
     }
@@ -2099,6 +2362,7 @@ export default class GameBootstrap extends cc.Component {
         };
         redraw(false);
         const label = this.makeLabel(node, name + "Label", text, text.length > 3 ? 18 : 35, cc.color(245, 248, 255));
+        label.overflow = cc.Label.Overflow.SHRINK;
         label.node.setContentSize(width - 12, height - 10);
 
         node.on(cc.Node.EventType.TOUCH_START, () => {
@@ -2232,7 +2496,7 @@ export default class GameBootstrap extends cc.Component {
             const outcome = this.currentOutcome || resolveSongOutcome(this.activeSong, snapshot.score);
             this.instructionLabel.string = this.resultInstruction(outcome);
         } else if (this.gameplayActive) {
-            this.instructionLabel.string = "方向键 / WASD · 在每个箭头的目标时刻直接输入";
+            this.instructionLabel.string = "方向键 / WASD · 在箭头目标时刻输入";
         }
     }
 
@@ -2247,6 +2511,18 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private onWindowResize(): void {
-        this.scheduleOnce(() => this.layout(), 0);
+        if (typeof window === "undefined") {
+            this.layout();
+            return;
+        }
+        if (this.resizeTimer !== null) {
+            window.clearTimeout(this.resizeTimer);
+        }
+        this.resizeTimer = window.setTimeout(() => {
+            this.resizeTimer = null;
+            if (cc.isValid(this.node)) {
+                this.layout();
+            }
+        }, 60);
     }
 }
