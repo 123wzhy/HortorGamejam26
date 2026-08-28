@@ -969,11 +969,10 @@ export default class GameBootstrap extends cc.Component {
             });
         }
         if (snapshot.latest) {
-            lines.push(
-                "",
-                "最近完整结算：第 " + snapshot.latest.rank + " 名"
-                    + (snapshot.latest.retained ? "" : "（未进入前 10）")
-            );
+            const latestText = snapshot.latest.retained && snapshot.latest.rank !== null
+                ? "第 " + snapshot.latest.rank + " 名"
+                : "未进入前 10";
+            lines.push("", "最近完整结算：" + latestText);
         }
         const persistenceNotice = this.leaderboardPersistenceNotice(snapshot.persistenceIssue);
         if (persistenceNotice) {
@@ -1180,7 +1179,7 @@ export default class GameBootstrap extends cc.Component {
             maxCombo: snapshot.maxCombo
         });
         console.info(
-            "[GameBootstrap] local-leaderboard rank=" + result.rank
+            "[GameBootstrap] local-leaderboard rank=" + (result.rank === null ? "outside-top-10" : result.rank)
             + " retained=" + result.retained
         );
     }

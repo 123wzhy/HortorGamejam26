@@ -343,28 +343,48 @@ function testLocalLeaderboardTopTenTruncation(): void {
         leaderboard.record({ score: 100 - index, maxCombo: index, completedAt: 1000 + index });
     }
     const outside = leaderboard.record({ score: 0, maxCombo: 0, completedAt: 2000 });
+    const secondOutside = leaderboard.record({ score: 1, maxCombo: 0, completedAt: 2001 });
     const snapshot = leaderboard.getSnapshot();
 
     equal(snapshot.entries.length, 10, "Local ranking retains exactly ten entries");
     equal(snapshot.entries[0].score, 100, "Truncation preserves the highest score");
     equal(snapshot.entries[9].score, 91, "Truncation preserves the tenth score");
-    equal(outside.rank, 11, "A result below the retained table still receives an honest rank");
+    equal(outside.rank, null, "An unretained result exposes no false exact rank");
     equal(outside.retained, false, "The eleventh result is not retained in the top ten");
-    equal(snapshot.latest!.entry.score, 0, "Latest completion summary survives outside the top ten");
+    equal(secondOutside.rank, null, "Repeated unretained results still expose no exact rank");
+    equal(secondOutside.retained, false, "Repeated low results remain outside the top ten");
+    equal(snapshot.latest!.entry.score, 1, "Latest completion summary survives outside the top ten");
 
     const reloaded = new LocalLeaderboard(storage).getSnapshot();
     equal(reloaded.entries.length, 10, "Reload keeps the persisted table truncated to ten entries");
-    equal(reloaded.latest!.rank, 11, "Reload preserves an unretained latest result's rank");
+    equal(reloaded.latest!.rank, null, "Reload does not invent an unretained latest result's rank");
     equal(reloaded.latest!.retained, false, "Reload keeps the latest result outside the retained table");
 }
 
 function testLocalLeaderboardPersistenceAndReload(): void {
     const storage = new MemoryLeaderboardStorage();
+    const oldKey = "local_leaderboard_v1";
+    storage.seed(oldKey, "legacy-data-must-remain-untouched");
     const leaderboard = new LocalLeaderboard(storage);
     leaderboard.record({ score: 500, maxCombo: 3, completedAt: 2000 });
     leaderboard.record({ score: 750, maxCombo: 4, completedAt: 3000 });
 
-    equal(storage.lastWrittenKey, LOCAL_LEADERBOARD_KEY, "Leaderboard uses the fixed safe storage key");
+    equal(
+        LOCAL_LEADERBOARD_KEY,
+        "hortor_gamejam26_local_leaderboard_v1",
+        "Leaderboard uses the fixed project-scoped safe storage key"
+    );
+    equal(
+        /^[A-Za-z0-9_-]{1,64}$/.test(LOCAL_LEADERBOARD_KEY),
+        true,
+        "Project-scoped storage key stays within the safe identifier contract"
+    );
+    equal(storage.lastWrittenKey, LOCAL_LEADERBOARD_KEY, "Leaderboard writes only the project-scoped storage key");
+    equal(
+        storage.getItem(oldKey),
+        "legacy-data-must-remain-untouched",
+        "The unreleased generic key is not migrated or deleted"
+    );
     const raw = storage.getItem(LOCAL_LEADERBOARD_KEY);
     if (!raw) {
         throw new Error("Expected persisted local leaderboard JSON");

@@ -1,4 +1,4 @@
-export const LOCAL_LEADERBOARD_KEY = "local_leaderboard_v1";
+export const LOCAL_LEADERBOARD_KEY = "hortor_gamejam26_local_leaderboard_v1";
 export const LOCAL_LEADERBOARD_LIMIT = 10;
 
 const LOCAL_LEADERBOARD_VERSION = 1;
@@ -30,7 +30,7 @@ export type LocalLeaderboardPersistenceIssue =
 
 export interface LocalLeaderboardResult {
     entry: LocalLeaderboardEntry;
-    rank: number;
+    rank: number | null;
     retained: boolean;
 }
 
@@ -165,15 +165,16 @@ export class LocalLeaderboard {
 
         const candidates = this.entries.concat([entry]);
         candidates.sort(compareEntries);
-        const rank = rankAmong(candidates, entry);
+        const insertionRank = rankAmong(candidates, entry);
+        const retained = insertionRank <= LOCAL_LEADERBOARD_LIMIT;
         this.entries = candidates.slice(0, LOCAL_LEADERBOARD_LIMIT).map(cloneEntry);
         this.latestCompleted = cloneEntry(entry);
         this.persist();
 
         return {
             entry: cloneEntry(entry),
-            rank,
-            retained: rank <= LOCAL_LEADERBOARD_LIMIT
+            rank: retained ? insertionRank : null,
+            retained
         };
     }
 
@@ -313,7 +314,7 @@ export class LocalLeaderboard {
         });
         return {
             entry: cloneEntry(this.latestCompleted),
-            rank: retainedRank || rankAmong(this.entries, this.latestCompleted),
+            rank: retainedRank || null,
             retained: retainedRank > 0
         };
     }
