@@ -6,9 +6,11 @@ import { PressedKeyState } from "../assets/scripts/input/PressedKeyState";
 import { BuildaAdapter, calculateRightAvoidance } from "../assets/scripts/platform/BuildaAdapter";
 import { SongClock } from "../assets/scripts/timing/SongClock";
 import {
+    calculateMenuCardVerticalLayout,
     calculateMenuFooterVerticalLayout,
     calculateNoteChipVerticalLayout,
     calculateRhythmVerticalLayout,
+    MenuCardVerticalLayout,
     MenuFooterVerticalLayout,
     RhythmVerticalLayout
 } from "../assets/scripts/ui/RhythmLayout";
@@ -458,6 +460,82 @@ function testMenuFooterVerticalLayout(): void {
     assertMenuFooterStack(compactSafeArea, "960x540 scaled safe-area menu");
 }
 
+function calculateMenuCardsForScenario(
+    viewportWidth: number,
+    viewportHeight: number,
+    safeTop: number,
+    safeBottom: number
+): MenuCardVerticalLayout {
+    const compact = viewportHeight < 640;
+    const safePressure = Math.min(1, (safeTop + safeBottom) / 150);
+    const logoScale = compact ? 0.45 - safePressure * 0.15 : 0.62;
+    const startScaleLimit = compact ? 0.62 - safePressure * 0.08 : 0.76;
+    const startScale = Math.min(startScaleLimit, Math.max(0.52, (viewportWidth - 80) / 527));
+    const footer = calculateMenuFooterVerticalLayout({
+        viewportHeight,
+        safeBottom,
+        startButtonHeight: 145,
+        startButtonScale: startScale
+    });
+    const logoBottom = viewportHeight * 0.5 - safeTop - 12 - 280 * logoScale;
+    const panelAspect = 696 / 565;
+    const preferredCardWidth = Math.min(310, viewportWidth * 0.28);
+    return calculateMenuCardVerticalLayout({
+        logoBottom,
+        cardBottom: footer.cardBottom,
+        preferredCardHeight: preferredCardWidth / panelAspect,
+        maximumCardHeight: compact ? 184 : 252
+    });
+}
+
+function assertVisibleMenuCards(layout: MenuCardVerticalLayout, message: string): void {
+    equal(layout.visible, true, message + ": information cards remain visible");
+    equal(
+        layout.cardHeight >= layout.minimumReadableHeight,
+        true,
+        message + ": visible cards retain the readable minimum height"
+    );
+    equal(
+        layout.cardTop !== null && layout.cardTop <= layout.maximumCardTop + 0.001,
+        true,
+        message + ": visible cards keep the explicit Logo gap"
+    );
+}
+
+function assertHiddenMenuCards(layout: MenuCardVerticalLayout, message: string): void {
+    equal(layout.visible, false, message + ": non-critical information cards are hidden");
+    equal(layout.cardHeight, 0, message + ": hidden cards allocate no visible height");
+    equal(layout.cardTop, null, message + ": hidden cards expose no misleading top edge");
+    equal(
+        layout.availableCardHeight < layout.minimumReadableHeight,
+        true,
+        message + ": hiding is caused by space below the readable threshold"
+    );
+}
+
+function testMenuCardVisibilityLayout(): void {
+    assertVisibleMenuCards(
+        calculateMenuCardsForScenario(1280, 720, 0, 0),
+        "1280x720 normal menu"
+    );
+    assertVisibleMenuCards(
+        calculateMenuCardsForScenario(960, 540, 44, 34),
+        "960x540 common Builda safe area"
+    );
+    assertHiddenMenuCards(
+        calculateMenuCardsForScenario(960, 540, 70, 70),
+        "960x540 70/70 safe area"
+    );
+    assertHiddenMenuCards(
+        calculateMenuCardsForScenario(960, 540, 60, 63),
+        "960x540 60/63 safe area"
+    );
+    assertHiddenMenuCards(
+        calculateMenuCardsForScenario(1280, 720, 81.2, 250),
+        "1280x720 81.2/250 safe area"
+    );
+}
+
 function testSongClockCalibrationAndPause(): void {
     let now = 100;
     const clock = new SongClock(() => now);
@@ -630,6 +708,11 @@ function testUiStartupRaceAndFallback(): void {
         "准备就绪 · 点击开始跳舞",
         "Successful completion reports a playable menu"
     );
+    equal(
+        startupStatusText(markPlatformReady(artFirst), true),
+        "准备就绪 · 点击开始跳舞 · 安全区受限，已隐藏信息卡",
+        "Async readiness refresh preserves the safe-area card notice"
+    );
 }
 
 async function run(): Promise<void> {
@@ -646,11 +729,12 @@ async function run(): Promise<void> {
     testTimelineAndSafeAreaMath();
     testSafeBottomVerticalLayout();
     testMenuFooterVerticalLayout();
+    testMenuCardVisibilityLayout();
     testSongClockCalibrationAndPause();
     testUiStartupRaceAndFallback();
     await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
-    console.log("logic-tests=passed cases=17");
+    console.log("logic-tests=passed cases=18");
 }
 
 run().catch((error) => {
