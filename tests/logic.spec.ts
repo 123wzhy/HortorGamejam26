@@ -10,6 +10,13 @@ import {
     calculateRhythmVerticalLayout,
     RhythmVerticalLayout
 } from "../assets/scripts/ui/RhythmLayout";
+import {
+    canEnterGameplay,
+    initialUiStartupState,
+    markArtLoaded,
+    markPlatformReady,
+    startupStatusText
+} from "../assets/scripts/ui/UiStartupState";
 
 declare const global: any;
 
@@ -459,6 +466,49 @@ async function testBuildaAudioResultMapping(): Promise<void> {
     }
 }
 
+function testUiStartupRaceAndFallback(): void {
+    const initial = initialUiStartupState();
+    equal(canEnterGameplay(initial), false, "Gameplay waits for the platform-ready boundary");
+    equal(
+        startupStatusText(initial),
+        "降级菜单可用 · 正在连接创游世界与加载美术…",
+        "The synchronous fallback menu is explicit while both tasks are pending"
+    );
+
+    const platformFirst = markPlatformReady(initial);
+    equal(canEnterGameplay(platformFirst), true, "A hanging art callback never blocks playable startup");
+    equal(
+        startupStatusText(platformFirst),
+        "准备就绪 · 美术加载中 · 可点击开始",
+        "Platform readiness remains visible while art is still pending"
+    );
+
+    const platformThenMissing = markArtLoaded(platformFirst, 2);
+    const artThenPlatform = markPlatformReady(markArtLoaded(initial, 2));
+    equal(
+        startupStatusText(platformThenMissing),
+        startupStatusText(artThenPlatform),
+        "Art/platform completion order converges to the same status"
+    );
+    equal(
+        startupStatusText(artThenPlatform),
+        "准备就绪 · 部分美术缺失，已启用降级界面",
+        "Missing art cannot overwrite platform readiness with a connection error"
+    );
+
+    const artFirst = markArtLoaded(initial, 0);
+    equal(
+        startupStatusText(artFirst),
+        "美术已就绪 · 正在连接创游世界…",
+        "Art readiness does not pretend the platform is ready"
+    );
+    equal(
+        startupStatusText(markPlatformReady(artFirst)),
+        "准备就绪 · 点击开始跳舞",
+        "Successful completion reports a playable menu"
+    );
+}
+
 async function run(): Promise<void> {
     testJudgeBoundaries();
     testDemoGridAndGroups();
@@ -473,8 +523,9 @@ async function run(): Promise<void> {
     testTimelineAndSafeAreaMath();
     testSafeBottomVerticalLayout();
     testSongClockCalibrationAndPause();
+    testUiStartupRaceAndFallback();
     await testBuildaAudioResultMapping();
-    console.log("logic-tests=passed cases=14");
+    console.log("logic-tests=passed cases=15");
 }
 
 run().catch((error) => {

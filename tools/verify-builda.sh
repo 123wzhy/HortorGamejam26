@@ -48,12 +48,23 @@ if [ ! -f "$ART_CONFIG" ]; then
   echo "error: runtime texture bundle was not built" >&2
   exit 1
 fi
-for ART_NAME in BackGround logo startBtn settingBtn rankBtn helpBtn leftArrow downArrow upArrow rightArrow leftArrow2 downArrow2 upArrow2 rightArrow2; do
+ART_COUNT=0
+for ART_NAME in BackGround logo menuLogo todayTaskPanel songSelectPanel startBtn settingBtn rankBtn helpBtn leftArrow downArrow upArrow rightArrow leftArrow2 downArrow2 upArrow2 rightArrow2; do
   if ! grep -q "\"$ART_NAME\"" "$ART_CONFIG"; then
     echo "error: runtime texture bundle is missing $ART_NAME" >&2
     exit 1
   fi
+  ART_COUNT=$((ART_COUNT + 1))
 done
+if [ "$ART_COUNT" -ne 17 ]; then
+  echo "error: expected 17 audited runtime art entries, found $ART_COUNT" >&2
+  exit 1
+fi
+CONFIG_ART_COUNT=$(jq '[.paths[] | select(.[1] == 0)] | length' "$ART_CONFIG")
+if [ "$CONFIG_ART_COUNT" -ne 17 ]; then
+  echo "error: expected texture config to contain exactly 17 runtime textures, found $CONFIG_ART_COUNT" >&2
+  exit 1
+fi
 if printf '%s\n' "$ZIP_LIST" | grep -Eq '(^|/)design(/|$)|主界面|今日任务|游戏界面|选择歌曲|按键\.psd'; then
   echo "error: design references must not be included in the runtime bundle" >&2
   exit 1
@@ -65,4 +76,5 @@ fi
 
 "$PROJECT_ROOT/.builda-agent/builda" bundle-check --webview-compatible "$ZIP_PATH"
 echo "builda-verify=ok"
+echo "runtime-art-count=$CONFIG_ART_COUNT"
 echo "bundle=$ZIP_PATH"

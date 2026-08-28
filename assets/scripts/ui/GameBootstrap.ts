@@ -5,8 +5,16 @@ import { noteApproachProgress, timelineProgress } from "../gameplay/TimingProgre
 import { InputRouter } from "../input/InputRouter";
 import { BuildaAdapter, BuildaViewportMetrics, calculateRightAvoidance } from "../platform/BuildaAdapter";
 import { SongClock } from "../timing/SongClock";
-import { ArtAssetCatalog, ArtAssetName } from "./ArtAssetCatalog";
+import { ArtAssetCatalog, ArtAssetName, REQUIRED_ART_ASSETS } from "./ArtAssetCatalog";
 import { calculateNoteChipVerticalLayout, calculateRhythmVerticalLayout } from "./RhythmLayout";
+import {
+    canEnterGameplay,
+    initialUiStartupState,
+    markArtLoaded,
+    markPlatformReady,
+    startupStatusText,
+    UiStartupState
+} from "./UiStartupState";
 
 const { ccclass } = cc._decorator;
 
@@ -26,6 +34,10 @@ const GRADE_TEXT: { [key: string]: string } = {
 
 const NOTE_APPROACH_MS = 1200;
 const GROUP_RESULT_HOLD_MS = 420;
+const DIRECTIONS: Direction[] = ["left", "down", "up", "right"];
+const DEMO_NOTE_COUNT = DEMO_BEATMAP.groups.reduce((count, group) => count + group.notes.length, 0);
+const SMALL_ARROW_ASPECT = 73 / 71;
+const TOUCH_ARROW_ASPECT = 142 / 146;
 
 const DIRECTION_ART: { [key: string]: ArtAssetName } = {
     left: "leftArrow",
@@ -76,12 +88,17 @@ export default class GameBootstrap extends cc.Component {
     private menuStartButton: cc.Node = null;
     private menuTopButtons: cc.Node[] = [];
     private menuTaskPanel: cc.Node = null;
+    private menuTaskArtwork: cc.Node = null;
     private menuTaskGraphics: cc.Graphics = null;
+    private menuTaskTitle: cc.Label = null;
     private menuTaskLabel: cc.Label = null;
     private menuSongPanel: cc.Node = null;
+    private menuSongArtwork: cc.Node = null;
     private menuSongGraphics: cc.Graphics = null;
+    private menuSongTitle: cc.Label = null;
     private menuSongLabel: cc.Label = null;
     private menuHintRow: cc.Node = null;
+    private menuHintArrows: cc.Node[] = [];
     private menuStatusLabel: cc.Label = null;
     private infoOverlay: cc.Node = null;
     private infoBackdrop: cc.Graphics = null;
@@ -121,7 +138,7 @@ export default class GameBootstrap extends cc.Component {
         capsule: { top: 0, right: 0, width: 0, height: 0 },
         hosted: false
     };
-    private platformReady: boolean = false;
+    private startupState: UiStartupState = initialUiStartupState();
     private uiReady: boolean = false;
     private gameplayActive: boolean = false;
     private pausedByHost: boolean = false;
@@ -164,37 +181,70 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private initializeUi(): void {
+        this.buildUi();
+        this.input = new InputRouter(
+            (direction) => this.onDirection(direction),
+            () => this.restartGame()
+        );
+        this.input.attach();
+        this.uiReady = true;
+        this.layout();
+        this.showMenu();
+        this.refreshStartupStatus();
+        if (this.isDocumentHidden()) {
+            this.pauseForHost();
+        }
+
         this.art.load().then((missing) => {
             if (!cc.isValid(this.node)) {
                 return;
             }
-            this.buildUi();
-            this.input = new InputRouter(
-                (direction) => this.onDirection(direction),
-                () => this.restartGame()
-            );
-            this.input.attach();
-            this.uiReady = true;
+            this.startupState = markArtLoaded(this.startupState, missing.length);
+            this.applyLoadedArt();
             this.layout();
-            this.showMenu();
-            this.menuStatusLabel.string = missing.length > 0
-                ? "部分美术加载失败，已启用可操作降级界面"
-                : "正在连接创游世界…";
-            if (this.isDocumentHidden()) {
-                this.pauseForHost();
+            this.refreshStartupStatus();
+        }).catch((error: unknown) => {
+            console.error("[GameBootstrap] unexpected art load failure", error);
+            if (!cc.isValid(this.node)) {
+                return;
             }
-
-            this.adapter.ready().then(() => {
-                if (!cc.isValid(this.node)) {
-                    return;
-                }
-                this.platformReady = true;
-                this.layout();
-                this.menuStatusLabel.string = missing.length > 0
-                    ? "美术资源不完整 · 可继续体验"
-                    : "准备就绪 · 点击开始跳舞";
-            });
+            this.startupState = markArtLoaded(this.startupState, REQUIRED_ART_ASSETS.length);
+            this.applyLoadedArt();
+            this.layout();
+            this.refreshStartupStatus();
         });
+
+        this.adapter.ready().then(() => {
+            if (!cc.isValid(this.node)) {
+                return;
+            }
+            this.startupState = markPlatformReady(this.startupState);
+            this.layout();
+            this.refreshStartupStatus();
+        });
+    }
+
+    private applyLoadedArt(): void {
+        this.backgroundSprite.spriteFrame = this.art.get("BackGround");
+        this.applySpriteFrame(this.menuLogo, this.art.get("menuLogo"));
+        this.applySpriteFrame(this.gameLogo, this.art.get("logo"));
+        this.applyButtonFrame(this.menuStartButton, this.art.get("startBtn"));
+        ["settingBtn", "rankBtn", "helpBtn"].forEach((name, index) => {
+            this.applyButtonFrame(this.menuTopButtons[index], this.art.get(name as ArtAssetName));
+        });
+        DIRECTIONS.forEach((direction, index) => {
+            this.applySpriteFrame(this.menuHintArrows[index], this.art.get(DIRECTION_ART[direction]));
+            this.applyButtonFrame(this.directionButtons[index], this.art.get(DIRECTION_TOUCH_ART[direction]));
+        });
+        this.applyArtworkFrame(this.menuTaskArtwork, this.art.get("todayTaskPanel"));
+        this.applyArtworkFrame(this.menuSongArtwork, this.art.get("songSelectPanel"));
+        this.groupRenderKey = "";
+    }
+
+    private refreshStartupStatus(): void {
+        if (this.menuStatusLabel) {
+            this.menuStatusLabel.string = startupStatusText(this.startupState);
+        }
     }
 
     protected onDestroy(): void {
@@ -223,7 +273,8 @@ export default class GameBootstrap extends cc.Component {
     }
 
     protected update(): void {
-        if (!this.gameplayActive || !this.platformReady || !this.clock.isStarted() || this.clock.isPaused()) {
+        if (!this.gameplayActive || !canEnterGameplay(this.startupState)
+            || !this.clock.isStarted() || this.clock.isPaused()) {
             return;
         }
 
@@ -242,6 +293,10 @@ export default class GameBootstrap extends cc.Component {
 
     private buildUi(): void {
         this.node.removeAllChildren();
+        this.menuTopButtons = [];
+        this.menuHintArrows = [];
+        this.directionButtons = [];
+        this.noteChipViews = [];
         this.root = new cc.Node("RhythmUI");
         this.root.parent = this.node;
 
@@ -250,22 +305,26 @@ export default class GameBootstrap extends cc.Component {
         const backgroundFallbackNode = new cc.Node("BackgroundFallback");
         backgroundFallbackNode.parent = this.backgroundNode;
         this.backgroundFallback = backgroundFallbackNode.addComponent(cc.Graphics);
-        const backgroundFrame = this.art.get("BackGround");
-        if (backgroundFrame) {
-            this.backgroundSpriteNode = new cc.Node("BackgroundArtwork");
-            this.backgroundSpriteNode.parent = this.backgroundNode;
-            this.backgroundSprite = this.backgroundSpriteNode.addComponent(cc.Sprite);
-            this.backgroundSprite.spriteFrame = backgroundFrame;
-            this.backgroundSprite.sizeMode = cc.Sprite.SizeMode.RAW;
-        }
+        this.backgroundSpriteNode = new cc.Node("BackgroundArtwork");
+        this.backgroundSpriteNode.parent = this.backgroundNode;
+        this.backgroundSprite = this.backgroundSpriteNode.addComponent(cc.Sprite);
+        this.backgroundSprite.sizeMode = cc.Sprite.SizeMode.RAW;
+        this.backgroundSprite.spriteFrame = this.art.get("BackGround");
 
         this.gameRoot = new cc.Node("Gameplay");
         this.gameRoot.parent = this.root;
         this.menuRoot = new cc.Node("MainMenu");
         this.menuRoot.parent = this.root;
 
-        this.menuLogo = this.makeSpriteNode(this.menuRoot, "MenuLogo", this.art.get("logo"), 320, 214);
-        this.gameLogo = this.makeSpriteNode(this.gameRoot, "GameLogo", this.art.get("logo"), 320, 214);
+        this.menuLogo = this.makeSpriteNode(
+            this.menuRoot,
+            "MenuLogo",
+            this.art.get("menuLogo"),
+            420,
+            280,
+            "牛来"
+        );
+        this.gameLogo = this.makeSpriteNode(this.gameRoot, "GameLogo", this.art.get("logo"), 320, 214, "牛来");
         this.menuTopButtons = [
             this.makeSpriteButton(
                 this.menuRoot,
@@ -308,11 +367,25 @@ export default class GameBootstrap extends cc.Component {
         this.menuTaskPanel = new cc.Node("TodayTaskPanel");
         this.menuTaskPanel.parent = this.menuRoot;
         this.menuTaskGraphics = this.menuTaskPanel.addComponent(cc.Graphics);
+        this.menuTaskArtwork = this.makeArtworkNode(
+            this.menuTaskPanel,
+            "TodayTaskArtwork",
+            this.art.get("todayTaskPanel")
+        );
+        this.menuTaskTitle = this.makeLabel(
+            this.menuTaskPanel,
+            "TodayTaskFallbackTitle",
+            "今日目标",
+            20,
+            cc.color(255, 183, 55)
+        );
         this.menuTaskLabel = this.makeLabel(
             this.menuTaskPanel,
             "TodayTaskText",
-            "今日目标\n\n完成 3 组舞步\n获得 8000 分\n连击达到 10 次",
-            18,
+            "·  完成 3 组舞步        0/3\n"
+            + "·  获得 8000 分      0/8000\n"
+            + "·  连击达到 10 次    0/10",
+            16,
             cc.color(255, 239, 204)
         );
         this.menuTaskLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
@@ -320,27 +393,42 @@ export default class GameBootstrap extends cc.Component {
         this.menuSongPanel = new cc.Node("SongPanel");
         this.menuSongPanel.parent = this.menuRoot;
         this.menuSongGraphics = this.menuSongPanel.addComponent(cc.Graphics);
+        this.menuSongArtwork = this.makeArtworkNode(
+            this.menuSongPanel,
+            "SongPanelArtwork",
+            this.art.get("songSelectPanel")
+        );
+        this.menuSongTitle = this.makeLabel(
+            this.menuSongPanel,
+            "SongFallbackTitle",
+            "选择歌曲",
+            20,
+            cc.color(255, 183, 55)
+        );
         this.menuSongLabel = this.makeLabel(
             this.menuSongPanel,
             "SongText",
-            "选择歌曲\n\n▶  " + DEMO_BEATMAP.title + "\n    100 BPM · 8 组舞步",
-            18,
+            "▶  " + DEMO_BEATMAP.title + "\n"
+            + DEMO_BEATMAP.bpm + " BPM · " + DEMO_BEATMAP.groups.length + " 组 · " + DEMO_NOTE_COUNT + " 音符\n"
+            + "当前仅开放这一首 Demo 曲目",
+            16,
             cc.color(255, 239, 204)
         );
         this.menuSongLabel.horizontalAlign = cc.Label.HorizontalAlign.LEFT;
 
         this.menuHintRow = new cc.Node("ControlHint");
         this.menuHintRow.parent = this.menuRoot;
-        const directions: Direction[] = ["left", "down", "up", "right"];
-        directions.forEach((direction, index) => {
+        DIRECTIONS.forEach((direction, index) => {
             const arrow = this.makeSpriteNode(
                 this.menuHintRow,
                 "Hint-" + direction,
                 this.art.get(DIRECTION_ART[direction]),
                 54,
-                53
+                54 / SMALL_ARROW_ASPECT,
+                ARROW_TEXT[direction]
             );
             arrow.x = (index - 2.2) * 58;
+            this.menuHintArrows.push(arrow);
         });
         const hintLabel = this.makeLabel(
             this.menuHintRow,
@@ -355,7 +443,7 @@ export default class GameBootstrap extends cc.Component {
         this.menuStatusLabel = this.makeLabel(
             this.menuRoot,
             "MenuStatus",
-            "正在加载美术资源…",
+            startupStatusText(this.startupState),
             14,
             cc.color(255, 224, 139)
         );
@@ -397,12 +485,12 @@ export default class GameBootstrap extends cc.Component {
 
         this.directionPad = new cc.Node("DirectionPad");
         this.directionPad.parent = this.gameRoot;
-        directions.forEach((direction, index) => {
+        DIRECTIONS.forEach((direction, index) => {
             const button = this.makeSpriteButton(
                 this.directionPad,
                 "Touch-" + direction,
                 this.art.get(DIRECTION_TOUCH_ART[direction]),
-                82,
+                84 * TOUCH_ARROW_ASPECT,
                 84,
                 ARROW_TEXT[direction],
                 () => this.input && this.input.routeDirection(direction)
@@ -596,14 +684,17 @@ export default class GameBootstrap extends cc.Component {
         const halfWidth = this.viewportWidth * 0.5;
         const halfHeight = this.viewportHeight * 0.5;
         const compact = this.viewportHeight < 640;
-        const logoScale = compact ? 0.52 : 0.68;
+        const safePressure = Math.min(1, (this.metrics.safe.top + this.metrics.safe.bottom) / 150);
+        const logoScale = compact ? 0.45 - safePressure * 0.15 : 0.62;
         this.menuLogo.scale = logoScale;
+        const logoWidth = this.menuLogo.width * logoScale;
+        const logoHeight = this.menuLogo.height * logoScale;
         this.menuLogo.setPosition(
-            -halfWidth + this.metrics.safe.left + 18 + 160 * logoScale,
-            halfHeight - this.metrics.safe.top - 16 - 107 * logoScale
+            -halfWidth + this.metrics.safe.left + 18 + logoWidth * 0.5,
+            halfHeight - this.metrics.safe.top - 12 - logoHeight * 0.5
         );
 
-        const topScale = compact ? 0.55 : 0.66;
+        const topScale = compact ? 0.52 : 0.66;
         const rightAvoidance = calculateRightAvoidance(
             this.metrics.safe.right,
             this.metrics.capsule.right,
@@ -622,10 +713,30 @@ export default class GameBootstrap extends cc.Component {
             cursor += scaledWidth;
         });
 
-        const cardWidth = Math.min(310, contentWidth * 0.28);
-        const cardHeight = compact ? 164 : 190;
-        const cardSideMargin = Math.max(24, Math.min(42, contentWidth * 0.035));
-        const cardY = compact ? 2 : 22;
+        const startScaleLimit = compact ? 0.62 - safePressure * 0.08 : 0.76;
+        const startScale = Math.min(startScaleLimit, Math.max(0.52, (contentWidth - 80) / 527));
+        const hintY = -halfHeight + this.metrics.safe.bottom + 40;
+        const startY = hintY + 50 + 72.5 * startScale;
+        const statusY = startY + 82 * startScale;
+        this.menuStartButton.scale = startScale;
+        this.menuStartButton.setPosition(contentCenterX, startY);
+        this.menuHintRow.setPosition(contentCenterX, hintY);
+        this.menuStatusLabel.node.setContentSize(Math.min(620, contentWidth - 40), 24);
+        this.menuStatusLabel.node.setPosition(contentCenterX, statusY);
+
+        const panelAspect = 696 / 565;
+        const preferredCardWidth = Math.min(310, contentWidth * 0.28);
+        const cardBottom = statusY + 20;
+        const logoBottom = this.menuLogo.y - logoHeight * 0.5;
+        const availableCardHeight = Math.max(96, logoBottom - 8 - cardBottom);
+        const cardHeight = Math.min(
+            preferredCardWidth / panelAspect,
+            compact ? 184 : 252,
+            availableCardHeight
+        );
+        const cardWidth = Math.min(preferredCardWidth, cardHeight * panelAspect);
+        const cardSideMargin = Math.max(18, Math.min(42, contentWidth * 0.035));
+        const cardY = cardBottom + cardHeight * 0.5;
         this.menuTaskPanel.setPosition(
             -halfWidth + this.metrics.safe.left + cardSideMargin + cardWidth * 0.5,
             cardY
@@ -634,19 +745,41 @@ export default class GameBootstrap extends cc.Component {
             halfWidth - this.metrics.safe.right - cardSideMargin - cardWidth * 0.5,
             cardY
         );
-        this.drawMenuCard(this.menuTaskGraphics, cardWidth, cardHeight);
-        this.drawMenuCard(this.menuSongGraphics, cardWidth, cardHeight);
-        this.menuTaskLabel.node.setContentSize(cardWidth - 42, cardHeight - 30);
-        this.menuSongLabel.node.setContentSize(cardWidth - 42, cardHeight - 30);
+        this.menuTaskPanel.setContentSize(cardWidth, cardHeight);
+        this.menuSongPanel.setContentSize(cardWidth, cardHeight);
 
-        const startScale = Math.min(compact ? 0.62 : 0.76, Math.max(0.54, (contentWidth - 80) / 527));
-        const hintY = -halfHeight + this.metrics.safe.bottom + 40;
-        const startY = hintY + 50 + 72.5 * startScale;
-        this.menuStartButton.scale = startScale;
-        this.menuStartButton.setPosition(contentCenterX, startY);
-        this.menuHintRow.setPosition(contentCenterX, hintY);
-        this.menuStatusLabel.node.setContentSize(Math.min(620, contentWidth - 40), 24);
-        this.menuStatusLabel.node.setPosition(contentCenterX, startY + 82 * startScale);
+        const hasTaskArt = this.layoutArtworkWithin(this.menuTaskArtwork, cardWidth, cardHeight);
+        const hasSongArt = this.layoutArtworkWithin(this.menuSongArtwork, cardWidth, cardHeight);
+        if (hasTaskArt) {
+            this.menuTaskGraphics.clear();
+        } else {
+            this.drawMenuCard(this.menuTaskGraphics, cardWidth, cardHeight);
+        }
+        if (hasSongArt) {
+            this.menuSongGraphics.clear();
+        } else {
+            this.drawMenuCard(this.menuSongGraphics, cardWidth, cardHeight);
+        }
+
+        this.menuTaskTitle.node.active = !hasTaskArt;
+        this.menuSongTitle.node.active = !hasSongArt;
+        const fallbackTitleY = cardHeight * 0.5 - Math.min(28, cardHeight * 0.2);
+        [this.menuTaskTitle, this.menuSongTitle].forEach((title) => {
+            title.fontSize = Math.max(14, Math.min(20, cardHeight * 0.1));
+            title.lineHeight = Math.round(title.fontSize * 1.18);
+            title.node.setContentSize(cardWidth - 30, Math.min(44, cardHeight * 0.24));
+            title.node.setPosition(0, fallbackTitleY);
+        });
+
+        const bodyFontSize = Math.max(12, Math.min(16, cardHeight * 0.075));
+        this.menuTaskLabel.fontSize = bodyFontSize;
+        this.menuTaskLabel.lineHeight = Math.max(25, Math.round(cardHeight * 0.19));
+        this.menuTaskLabel.node.setContentSize(Math.max(96, cardWidth - 42), cardHeight * 0.66);
+        this.menuTaskLabel.node.setPosition(0, -cardHeight * 0.1);
+        this.menuSongLabel.fontSize = bodyFontSize;
+        this.menuSongLabel.lineHeight = Math.max(24, Math.round(cardHeight * 0.15));
+        this.menuSongLabel.node.setContentSize(Math.max(96, cardWidth - 40), cardHeight * 0.68);
+        this.menuSongLabel.node.setPosition(0, -cardHeight * 0.09);
     }
 
     private layoutInfoOverlay(): void {
@@ -683,7 +816,7 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private startGame(): void {
-        if (!this.platformReady) {
+        if (!canEnterGameplay(this.startupState)) {
             this.menuStatusLabel.string = "仍在连接创游世界，请稍候…";
             return;
         }
@@ -721,10 +854,9 @@ export default class GameBootstrap extends cc.Component {
         const groupMark = completedGroups >= 3 ? "✓" : "·";
         const scoreMark = snapshot.score >= 8000 ? "✓" : "·";
         const comboMark = snapshot.maxCombo >= 10 ? "✓" : "·";
-        this.menuTaskLabel.string = "今日目标\n\n"
-            + groupMark + "  完成 3 组舞步    " + Math.min(completedGroups, 3) + "/3\n"
+        this.menuTaskLabel.string = groupMark + "  完成 3 组舞步        " + Math.min(completedGroups, 3) + "/3\n"
             + scoreMark + "  获得 8000 分      " + snapshot.score + "/8000\n"
-            + comboMark + "  连击达到 10 次   " + snapshot.maxCombo + "/10";
+            + comboMark + "  连击达到 10 次    " + snapshot.maxCombo + "/10";
     }
 
     private openPlatformSettings(): void {
@@ -775,7 +907,7 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private restartGame(): void {
-        if (!this.platformReady || !this.gameplayActive) {
+        if (!canEnterGameplay(this.startupState) || !this.gameplayActive) {
             return;
         }
         this.engine.restart();
@@ -798,7 +930,7 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private onDirection(direction: Direction): void {
-        if (!this.gameplayActive || !this.platformReady || this.clock.isPaused()) {
+        if (!this.gameplayActive || !canEnterGameplay(this.startupState) || this.clock.isPaused()) {
             return;
         }
         const songTimeMs = this.clock.currentTimeMs();
@@ -882,12 +1014,14 @@ export default class GameBootstrap extends cc.Component {
             chip.x = (noteIndex - (count - 1) * 0.5) * stride;
             const card = chip.addComponent(cc.Graphics);
 
+            const arrowWidth = Math.min(chipWidth - 18, chipLayout.arrowBoxHeight + 8);
             const arrowNode = this.makeSpriteNode(
                 chip,
                 "Arrow",
                 this.art.get(DIRECTION_ART[item.note.direction]),
-                Math.min(chipWidth - 18, chipLayout.arrowBoxHeight + 8),
-                Math.min(chipWidth - 18, chipLayout.arrowBoxHeight + 8)
+                arrowWidth,
+                arrowWidth / SMALL_ARROW_ASPECT,
+                ARROW_TEXT[item.note.direction]
             );
             arrowNode.setPosition(0, chipLayout.arrowY);
             const arrow = arrowNode.getComponent(cc.Sprite);
@@ -1163,7 +1297,8 @@ export default class GameBootstrap extends cc.Component {
         name: string,
         frame: cc.SpriteFrame | null,
         width: number,
-        height: number
+        height: number,
+        fallbackText: string = "?"
     ): cc.Node {
         const node = new cc.Node(name);
         node.parent = parent;
@@ -1172,11 +1307,94 @@ export default class GameBootstrap extends cc.Component {
         sprite.sizeMode = cc.Sprite.SizeMode.CUSTOM;
         sprite.type = cc.Sprite.Type.SIMPLE;
         sprite.spriteFrame = frame;
-        if (!frame) {
-            const fallback = this.makeLabel(node, name + "Fallback", "?", Math.min(34, height * 0.5), cc.Color.WHITE);
-            fallback.node.setContentSize(width, height);
-        }
+
+        const fallback = new cc.Node(name + "Fallback");
+        fallback.parent = node;
+        fallback.setContentSize(width, height);
+        const fallbackGraphics = fallback.addComponent(cc.Graphics);
+        fallbackGraphics.fillColor = cc.color(28, 23, 16, 245);
+        fallbackGraphics.roundRect(-width * 0.5, -height * 0.5, width, height, Math.min(18, height * 0.18));
+        fallbackGraphics.fill();
+        fallbackGraphics.strokeColor = cc.color(255, 183, 55, 235);
+        fallbackGraphics.lineWidth = Math.max(2, Math.min(4, height * 0.05));
+        fallbackGraphics.roundRect(-width * 0.5, -height * 0.5, width, height, Math.min(18, height * 0.18));
+        fallbackGraphics.stroke();
+        const fallbackLabel = this.makeLabel(
+            fallback,
+            name + "FallbackLabel",
+            fallbackText,
+            Math.min(34, Math.max(14, height * 0.38)),
+            cc.color(255, 239, 204)
+        );
+        fallbackLabel.node.setContentSize(Math.max(20, width - 12), Math.max(20, height - 8));
+        fallback.active = !frame;
         return node;
+    }
+
+    private makeArtworkNode(
+        parent: cc.Node,
+        name: string,
+        frame: cc.SpriteFrame | null
+    ): cc.Node {
+        const node = new cc.Node(name);
+        node.parent = parent;
+        const sprite = node.addComponent(cc.Sprite);
+        sprite.sizeMode = cc.Sprite.SizeMode.CUSTOM;
+        sprite.type = cc.Sprite.Type.SIMPLE;
+        sprite.spriteFrame = frame;
+        node.active = !!frame;
+        return node;
+    }
+
+    private applySpriteFrame(node: cc.Node, frame: cc.SpriteFrame | null): void {
+        if (!node) {
+            return;
+        }
+        const sprite = node.getComponent(cc.Sprite);
+        if (sprite) {
+            sprite.spriteFrame = frame;
+        }
+        const fallback = node.getChildByName(node.name + "Fallback");
+        if (fallback) {
+            fallback.active = !frame;
+        }
+    }
+
+    private applyArtworkFrame(node: cc.Node, frame: cc.SpriteFrame | null): void {
+        if (!node) {
+            return;
+        }
+        const sprite = node.getComponent(cc.Sprite);
+        if (sprite) {
+            sprite.spriteFrame = frame;
+        }
+        node.active = !!frame;
+    }
+
+    private applyButtonFrame(button: cc.Node, frame: cc.SpriteFrame | null): void {
+        if (!button) {
+            return;
+        }
+        this.applySpriteFrame(button.getChildByName(button.name + "Visual"), frame);
+    }
+
+    /** Uses node scale with source dimensions so artwork is contained without stretching. */
+    private layoutArtworkWithin(node: cc.Node, maximumWidth: number, maximumHeight: number): boolean {
+        if (!node) {
+            return false;
+        }
+        const sprite = node.getComponent(cc.Sprite);
+        const frame = sprite && sprite.spriteFrame;
+        node.active = !!frame;
+        if (!frame) {
+            return false;
+        }
+        const source = frame.getOriginalSize();
+        const sourceWidth = Math.max(1, source.width);
+        const sourceHeight = Math.max(1, source.height);
+        node.setContentSize(sourceWidth, sourceHeight);
+        node.scale = Math.min(maximumWidth / sourceWidth, maximumHeight / sourceHeight);
+        return true;
     }
 
     private makeSpriteButton(
@@ -1191,14 +1409,7 @@ export default class GameBootstrap extends cc.Component {
         const node = new cc.Node(name);
         node.parent = parent;
         node.setContentSize(width, height);
-        const visual = this.makeSpriteNode(node, name + "Visual", frame, width, height);
-        if (!frame) {
-            const label = visual.getChildByName(name + "VisualFallback");
-            const component = label && label.getComponent(cc.Label);
-            if (component) {
-                component.string = fallbackText;
-            }
-        }
+        const visual = this.makeSpriteNode(node, name + "Visual", frame, width, height, fallbackText);
         node.on(cc.Node.EventType.TOUCH_START, () => {
             visual.scale = 0.94;
             visual.color = cc.color(255, 222, 168);
@@ -1349,7 +1560,7 @@ export default class GameBootstrap extends cc.Component {
             this.clock.pause();
             this.pausedByHost = true;
         }
-        if (this.platformReady) {
+        if (canEnterGameplay(this.startupState)) {
             this.instructionLabel.string = "宿主已暂停 · 返回后继续";
         }
     }
