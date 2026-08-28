@@ -1,11 +1,19 @@
-import { DEMO_BEATMAP, Direction } from "../domain/Beatmap";
+import { Direction } from "../domain/Beatmap";
 import { analyzeBeatmapDifficulty, MAX_DIFFICULTY_STARS } from "../domain/BeatmapDifficulty";
 import {
     LocalLeaderboard,
     LocalLeaderboardPersistenceIssue,
     LocalLeaderboardStorage
 } from "../domain/LocalLeaderboard";
-import { beatmapNoteCount, DEMO_SONGS, SongDefinition } from "../domain/SongCatalog";
+import {
+    beatmapNoteCount,
+    createSongSessionConfig,
+    DEMO_SONGS,
+    resolveSongOutcome,
+    SongDefinition,
+    SongOutcome,
+    SongSessionConfig
+} from "../domain/SongCatalog";
 import {
     GroupDanceFlow,
     GroupDanceSegment,
@@ -112,12 +120,18 @@ export default class GameBootstrap extends cc.Component {
     private readonly songPreview: SongPreviewController = new SongPreviewController(this.adapter);
     private readonly clock: SongClock = new SongClock();
     private readonly judge: JudgeSystem = new JudgeSystem();
-    private readonly engine: SequenceEngine = new SequenceEngine(DEMO_BEATMAP, this.judge);
-    private readonly danceFlow: GroupDanceFlow = new GroupDanceFlow(DEMO_BEATMAP.groups.length);
+    private activeSong: SongDefinition = DEMO_SONGS[0];
+    private activeSession: SongSessionConfig = createSongSessionConfig(
+        this.activeSong,
+        DEFAULT_JUDGE_WINDOWS.badMs
+    );
+    private engine: SequenceEngine = new SequenceEngine(this.activeSession.beatmap, this.judge);
+    private danceFlow: GroupDanceFlow = new GroupDanceFlow(
+        this.activeSession.groupCount,
+        this.activeSession.danceDurationMs
+    );
     private readonly leaderboard: LocalLeaderboard = new LocalLeaderboard(browserLocalLeaderboardStorage());
-    private readonly songDurationMs: number =
-        DEMO_BEATMAP.groups[DEMO_BEATMAP.groups.length - 1].notes.slice(-1)[0].targetTimeMs
-        + DEFAULT_JUDGE_WINDOWS.badMs;
+    private songDurationMs: number = this.activeSession.songDurationMs;
     private input: InputRouter | null = null;
 
     private root: cc.Node = null;
@@ -191,10 +205,13 @@ export default class GameBootstrap extends cc.Component {
     private selectedSongIndex: number = 0;
     private uiReady: boolean = false;
     private gameplayActive: boolean = false;
+    private gameplayStartPending: boolean = false;
+    private gameplayStartRequestId: number = 0;
     private pausedByHost: boolean = false;
     private clockHeldForDanceFlow: boolean = false;
     private hostSuspended: boolean = false;
     private completionRecordedForRun: boolean = false;
+    private currentOutcome: SongOutcome | null = null;
     private groupRenderKey: string = "";
     private heldGroupIndex: number = -1;
     private lastResultText: string = "等待第一键";
@@ -305,6 +322,7 @@ export default class GameBootstrap extends cc.Component {
     }
 
     protected onDestroy(): void {
+        this.cancelPendingGameplayStart();
         this.songPreview.stop();
         if (this.dancerController) {
             this.dancerController.dispose();
@@ -547,7 +565,13 @@ export default class GameBootstrap extends cc.Component {
         this.groupPanel = panelNode.addComponent(cc.Graphics);
 
         this.levelLabel = this.makeLabel(this.gameRoot, "Level", "节拍训练场", 18, cc.color(255, 239, 204));
-        this.trackLabel = this.makeLabel(this.gameRoot, "Track", DEMO_BEATMAP.title, 14, cc.color(255, 207, 82));
+        this.trackLabel = this.makeLabel(
+            this.gameRoot,
+            "Track",
+            DEMO_SONGS[0].beatmap.title,
+            14,
+            cc.color(255, 207, 82)
+        );
         this.hostLabel = this.makeLabel(this.gameRoot, "Host", "正在初始化", 11, cc.color(255, 224, 139));
         this.scoreLabel = this.makeLabel(this.gameRoot, "Score", "得分\n000000", 31, cc.color(255, 248, 225));
         this.judgementLabel = this.makeLabel(this.gameRoot, "Judgement", "等待第一键", 23, cc.color(255, 207, 82));
@@ -979,6 +1003,7 @@ export default class GameBootstrap extends cc.Component {
         if (songIndex < 0 || songIndex >= DEMO_SONGS.length) {
             return;
         }
+        this.cancelPendingGameplayStart();
         const changed = this.selectedSongIndex !== songIndex;
         this.selectedSongIndex = songIndex;
         if (changed && this.songPreview.getSnapshot().phase !== "idle") {
@@ -999,6 +1024,7 @@ export default class GameBootstrap extends cc.Component {
         if (songIndex < 0 || songIndex >= DEMO_SONGS.length) {
             return;
         }
+        this.cancelPendingGameplayStart();
         this.selectedSongIndex = songIndex;
         const song = this.selectedSong();
         const pending = this.songPreview.toggle(song.id, song.previewPath, song.previewVolume);
@@ -1012,9 +1038,9 @@ export default class GameBootstrap extends cc.Component {
         console.info("[GameBootstrap] preview-toggle=" + song.id);
     }
 
-    private stopSongPreview(): void {
+    private stopSongPreview(): Promise<SongPreviewSnapshot> {
         if (this.songPreview.getSnapshot().phase === "idle") {
-            return;
+            return Promise.resolve(this.songPreview.getSnapshot());
         }
         const pending = this.songPreview.stop();
         this.refreshSongRows();
@@ -1023,6 +1049,7 @@ export default class GameBootstrap extends cc.Component {
                 this.refreshSongRows(snapshot);
             }
         });
+        return pending;
     }
 
     private refreshSongRows(snapshot: SongPreviewSnapshot = this.songPreview.getSnapshot()): void {
@@ -1130,18 +1157,28 @@ export default class GameBootstrap extends cc.Component {
             this.refreshStartupStatus();
             return;
         }
-        const song = this.selectedSong();
-        if (song.id !== DEMO_BEATMAP.id) {
-            this.stopSongPreview();
-            this.showInfo(
-                "曲目已选择",
-                "已选择「" + song.beatmap.title + "」。\n\n"
-                + "这首曲目的选单与试听已经可用；玩法切换将在下一阶段接入。"
-                + "当前开始游戏请先选择 NEON GRID。"
-            );
+        if (this.gameplayStartPending) {
             return;
         }
-        this.stopSongPreview();
+        const song = this.selectedSong();
+        const requestId = ++this.gameplayStartRequestId;
+        this.gameplayStartPending = true;
+        this.stopSongPreview().then((snapshot) => {
+            if (!cc.isValid(this.node) || requestId !== this.gameplayStartRequestId) {
+                return;
+            }
+            this.gameplayStartPending = false;
+            this.refreshSongRows(snapshot);
+            if (!canEnterGameplay(this.startupState) || this.hostSuspended) {
+                this.refreshStartupStatus();
+                return;
+            }
+            this.beginGameplay(song);
+        });
+    }
+
+    private beginGameplay(song: SongDefinition): void {
+        this.activeSong = song;
         this.hideInfo();
         this.menuRoot.active = false;
         this.gameRoot.active = true;
@@ -1155,6 +1192,8 @@ export default class GameBootstrap extends cc.Component {
         if (!this.uiReady) {
             return;
         }
+        this.cancelPendingGameplayStart();
+        this.stopSongPreview();
         if (this.clock.isStarted() && !this.clock.isPaused()) {
             this.clock.pause();
         }
@@ -1165,8 +1204,9 @@ export default class GameBootstrap extends cc.Component {
         this.clockHeldForDanceFlow = false;
         this.heldGroupIndex = -1;
         this.gameplayActive = false;
+        this.currentOutcome = null;
         if (this.dancerController) {
-            this.dancerController.setState("idle", true);
+            this.dancerController.setMenuIdle(true);
         }
         this.setGroupInputUiVisible(true);
         this.gameRoot.active = false;
@@ -1261,12 +1301,13 @@ export default class GameBootstrap extends cc.Component {
         if (!canEnterGameplay(this.startupState) || !this.gameplayActive) {
             return;
         }
-        this.engine.restart();
-        this.danceFlow.reset();
+        this.configureActiveSongSession();
+        this.engine.start();
         this.completionRecordedForRun = false;
         this.clock.restart();
         if (this.dancerController) {
-            this.dancerController.setState("idle", true);
+            this.dancerController.setGameplayIdle(true);
+            this.dancerController.setAnimationProfile(this.activeSong.animation);
         }
         this.pausedByHost = false;
         this.clockHeldForDanceFlow = false;
@@ -1284,6 +1325,30 @@ export default class GameBootstrap extends cc.Component {
         if (this.hostSuspended) {
             this.pauseForHost();
         }
+    }
+
+    private configureActiveSongSession(): void {
+        this.activeSession = createSongSessionConfig(
+            this.activeSong,
+            DEFAULT_JUDGE_WINDOWS.badMs
+        );
+        this.engine = new SequenceEngine(this.activeSession.beatmap, this.judge);
+        this.danceFlow = new GroupDanceFlow(
+            this.activeSession.groupCount,
+            this.activeSession.danceDurationMs
+        );
+        this.songDurationMs = this.activeSession.songDurationMs;
+        this.currentOutcome = null;
+        this.trackLabel.string = this.activeSession.title;
+        this.levelLabel.string = this.activeSong.beatmap.bpm + " BPM · 节拍训练场";
+    }
+
+    private cancelPendingGameplayStart(): void {
+        if (!this.gameplayStartPending) {
+            return;
+        }
+        this.gameplayStartRequestId += 1;
+        this.gameplayStartPending = false;
     }
 
     private onDirection(direction: Direction): void {
@@ -1378,7 +1443,7 @@ export default class GameBootstrap extends cc.Component {
         }
         if (transition.kind === "next-group") {
             if (this.dancerController) {
-                this.dancerController.setState("idle", true);
+                this.dancerController.setGameplayIdle(true);
             }
             this.heldGroupIndex = -1;
             this.groupRenderKey = "";
@@ -1398,10 +1463,16 @@ export default class GameBootstrap extends cc.Component {
 
         this.clockHeldForDanceFlow = true;
         this.setGroupInputUiVisible(false);
+        const snapshot = this.engine.getSnapshot();
+        this.currentOutcome = resolveSongOutcome(this.activeSong, snapshot.score);
         this.recordCompletedRun();
-        this.instructionLabel.string = "COMPLETE / 完成 · 点击重新开始或按 R";
+        this.lastResultText = (this.currentOutcome.passed ? "成功 / PASS" : "失败 / FAIL")
+            + " · 得分 " + this.currentOutcome.score + " · 及格 " + this.currentOutcome.passingScore;
+        this.lastResultColor = this.outcomeColor(this.currentOutcome);
+        this.restoreLastResult();
+        this.instructionLabel.string = this.resultInstruction(this.currentOutcome);
         if (this.dancerController) {
-            this.dancerController.setState("result", true);
+            this.dancerController.setResult(this.currentOutcome.passed, true);
         }
         this.updateGlobalTimeline(songTimeMs);
         this.refreshStats();
@@ -1442,6 +1513,17 @@ export default class GameBootstrap extends cc.Component {
         return "舞段 " + (segment.groupIndex + 1) + " / " + segment.groupCount
             + " · " + Math.max(0, segment.remainingMs / 1000).toFixed(1)
             + "s 后" + destination;
+    }
+
+    private resultInstruction(outcome: SongOutcome): string {
+        const status = outcome.passed ? "成功 / PASS" : "失败 / FAIL";
+        return status + " · 得分 " + outcome.score + " / " + outcome.maximumScore
+            + " · 及格线 " + outcome.passingScore + " · 点击重新开始或按 R";
+    }
+
+    private resultProgressText(outcome: SongOutcome): string {
+        return "谱面 100% · " + (outcome.passed ? "成功" : "失败")
+            + " · 得分 " + outcome.score + " · 及格线 " + outcome.passingScore;
     }
 
     private setGroupInputUiVisible(visible: boolean): void {
@@ -1617,7 +1699,9 @@ export default class GameBootstrap extends cc.Component {
         const width = this.globalBarWidth;
         const x = -width * 0.5;
         const progress = presentationFinished ? 1 : timelineProgress(songTimeMs, this.songDurationMs);
-        const feedbackColor = snapshot.lastJudgement
+        const feedbackColor = presentationFinished && this.currentOutcome
+            ? this.outcomeColor(this.currentOutcome)
+            : snapshot.lastJudgement
             ? this.judgementColor(snapshot.lastJudgement)
             : cc.color(255, 183, 55);
 
@@ -1658,7 +1742,8 @@ export default class GameBootstrap extends cc.Component {
         this.globalTimeline.fill();
 
         if (presentationFinished) {
-            this.progressLabel.string = "谱面 100% · COMPLETE / 完成";
+            const outcome = this.currentOutcome || resolveSongOutcome(this.activeSong, snapshot.score);
+            this.progressLabel.string = this.resultProgressText(outcome);
             this.progressLabel.node.color = feedbackColor;
         } else if (currentNote) {
             const remainingMs = currentNote.targetTimeMs - songTimeMs;
@@ -1682,7 +1767,7 @@ export default class GameBootstrap extends cc.Component {
             this.dancerNode.scaleY = this.dancerBaseScale;
             return;
         }
-        const beatDuration = 60000 / DEMO_BEATMAP.bpm;
+        const beatDuration = 60000 / this.activeSong.beatmap.bpm;
         const phase = ((songTimeMs % beatDuration) + beatDuration) % beatDuration / beatDuration;
         const pulse = Math.pow(1 - phase, 2);
         this.dancerNode.y = this.stageBaseY + 3 + pulse * 8;
@@ -2030,6 +2115,10 @@ export default class GameBootstrap extends cc.Component {
         }
     }
 
+    private outcomeColor(outcome: SongOutcome): cc.Color {
+        return outcome.passed ? cc.color(142, 242, 151) : cc.color(255, 104, 136);
+    }
+
     private gradeFillColor(grade: JudgeGrade): cc.Color {
         switch (grade) {
             case "Perfect":
@@ -2067,6 +2156,7 @@ export default class GameBootstrap extends cc.Component {
     private pauseForHost(): void {
         this.hostSuspended = true;
         if (!this.gameplayActive) {
+            this.cancelPendingGameplayStart();
             this.stopSongPreview();
         }
         if (this.dancerController) {
@@ -2111,7 +2201,9 @@ export default class GameBootstrap extends cc.Component {
         if (flow.phase === "dance" && flow.segment) {
             this.instructionLabel.string = this.danceInstruction(flow.segment);
         } else if (flow.phase === "result") {
-            this.instructionLabel.string = "COMPLETE / 完成 · 点击重新开始或按 R";
+            const snapshot = this.engine.getSnapshot();
+            const outcome = this.currentOutcome || resolveSongOutcome(this.activeSong, snapshot.score);
+            this.instructionLabel.string = this.resultInstruction(outcome);
         } else if (this.gameplayActive) {
             this.instructionLabel.string = "方向键 / WASD · 在每个箭头的目标时刻直接输入";
         }

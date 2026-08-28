@@ -59,7 +59,6 @@ export class SongPreviewController {
         }
         const operationId = ++this.operationId;
         const previousSongId = this.snapshot.songId;
-        const previousPhase = this.snapshot.phase;
         this.snapshot = {
             songId: previousSongId,
             phase: "stopping",
@@ -70,15 +69,9 @@ export class SongPreviewController {
             if (operationId !== this.operationId) {
                 return;
             }
-            this.snapshot = stopped
-                ? { songId: null, phase: "idle", available: true }
-                : previousPhase === "starting"
-                ? { songId: null, phase: "idle", available: false }
-                : {
-                    songId: previousSongId,
-                    phase: previousPhase,
-                    available: false
-                };
+            // A host rejection is still a completed local stop boundary. Do
+            // not leave a stale Play/Pause state behind after gameplay/home.
+            this.snapshot = { songId: null, phase: "idle", available: stopped };
         });
     }
 

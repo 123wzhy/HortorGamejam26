@@ -26,6 +26,16 @@ export interface SongOutcome {
     resultClip: "ResultPose" | "ResultPose2" | "ResultPose3";
 }
 
+export interface SongSessionConfig {
+    songId: string;
+    title: string;
+    beatmap: Beatmap;
+    groupCount: number;
+    noteCount: number;
+    songDurationMs: number;
+    danceDurationMs: number;
+}
+
 export const PERFECT_NOTE_SCORE = 1000;
 export const PASS_PERCENT = 60;
 export const FIRST_DANCE_DURATION_MS = 26800.00114440918;
@@ -60,6 +70,33 @@ export const DEMO_SONGS: SongDefinition[] = [
 
 export function beatmapNoteCount(beatmap: Beatmap): number {
     return beatmap.groups.reduce((count, group) => count + group.notes.length, 0);
+}
+
+/** Derives every per-run clock/flow input from one selected song. */
+export function createSongSessionConfig(
+    song: SongDefinition,
+    finalJudgementWindowMs: number
+): SongSessionConfig {
+    if (!song || !song.beatmap || !song.beatmap.groups.length) {
+        throw new Error("Song session requires a non-empty beatmap");
+    }
+    if (!isFinite(finalJudgementWindowMs) || finalJudgementWindowMs < 0) {
+        throw new Error("Song session requires a non-negative final judgement window");
+    }
+    const finalGroup = song.beatmap.groups[song.beatmap.groups.length - 1];
+    const finalNote = finalGroup.notes[finalGroup.notes.length - 1];
+    if (!finalNote || !isFinite(finalNote.targetTimeMs)) {
+        throw new Error("Song session requires a finite final note time");
+    }
+    return {
+        songId: song.id,
+        title: song.beatmap.title,
+        beatmap: song.beatmap,
+        groupCount: song.beatmap.groups.length,
+        noteCount: beatmapNoteCount(song.beatmap),
+        songDurationMs: finalNote.targetTimeMs + finalJudgementWindowMs,
+        danceDurationMs: song.animation.danceDurationMs
+    };
 }
 
 export function maximumSongScore(song: SongDefinition): number {
