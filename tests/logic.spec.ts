@@ -19,11 +19,13 @@ import { SongClock } from "../assets/scripts/timing/SongClock";
 import {
     calculateMenuCardVerticalLayout,
     calculateMenuFooterVerticalLayout,
+    calculateMenuHintHorizontalLayout,
     calculateNoteChipVerticalLayout,
     calculateRhythmVerticalLayout,
     MenuCardVerticalLayout,
     MenuFooterVerticalLayout,
-    RhythmVerticalLayout
+    RhythmVerticalLayout,
+    shouldShowLandscapeRotation
 } from "../assets/scripts/ui/RhythmLayout";
 import {
     canEnterGameplay,
@@ -678,6 +680,24 @@ function assertVerticalStack(layout: RhythmVerticalLayout, message: string): voi
         true,
         message + ": group panel stays below the HUD boundary"
     );
+    if (layout.showProgressLabel) {
+        const progressBottom = layout.progressLabelY - layout.progressLabelHeight * 0.5;
+        const timelineTop = layout.globalLineY + layout.timelineHalfHeight;
+        equal(
+            progressBottom >= timelineTop + layout.textTimelineGap - 0.001,
+            true,
+            message + ": progress text keeps its explicit gap above the timing bar"
+        );
+    }
+    if (layout.showInstruction) {
+        const instructionTop = layout.instructionLabelY + layout.instructionLabelHeight * 0.5;
+        const timelineBottom = layout.globalLineY - layout.timelineHalfHeight;
+        equal(
+            instructionTop <= timelineBottom - layout.textTimelineGap + 0.001,
+            true,
+            message + ": instruction text keeps its explicit gap below the timing bar"
+        );
+    }
     if (layout.showStage) {
         const stageLowerExtent = layout.compact ? 22 : 28;
         equal(
@@ -757,7 +777,13 @@ function testSafeBottomVerticalLayout(): void {
     equal(extremeBottomInset.showStage, false, "Extreme inset keeps the non-critical stage hidden");
     equal(extremeBottomInset.showProgressLabel, false, "Extreme inset hides only the progress text next");
     equal(extremeBottomInset.showTimelineBar, true, "Extreme inset preserves the timing line and marker");
-    equal(extremeBottomInset.safeInsetsClamped, false, "250-unit bottom inset still fits the full core stack");
+    equal(extremeBottomInset.safeInsetsClamped, true, "250-unit bottom inset is clamped before core panels collide");
+    near(
+        extremeBottomInset.safeBottomApplied,
+        238.8,
+        0.001,
+        "Timing-panel padding leaves the last collision-free bottom inset explicit"
+    );
     equal(extremeBottomInset.panelHeight >= 118, true, "Extreme inset retains the minimum note panel");
     near(
         extremeBottomInset.buttonTop - extremeBottomInset.buttonBottom,
@@ -776,7 +802,7 @@ function testSafeBottomVerticalLayout(): void {
     equal(impossibleBottomInset.safeInsetsClamped, true, "Physically impossible inset is explicitly clamped");
     near(
         impossibleBottomInset.safeBottomApplied,
-        250.8,
+        238.8,
         0.001,
         "Clamped layout exposes the last supported bottom inset"
     );
@@ -866,6 +892,30 @@ function testMenuFooterVerticalLayout(): void {
         startButtonScale: 0.5544
     });
     assertMenuFooterStack(compactSafeArea, "960x540 scaled safe-area menu");
+}
+
+function testMenuHintHorizontalLayout(): void {
+    const desktop = calculateMenuHintHorizontalLayout({ availableWidth: 620 });
+    equal(desktop.arrowCenters.length, 4, "Menu hint allocates all four direction icons");
+    near(
+        desktop.textLeft - desktop.arrowsRight,
+        desktop.groupGap,
+        0.001,
+        "Menu hint text starts after the explicit icon-group gap"
+    );
+    equal(desktop.arrowsRight < desktop.textLeft, true, "Menu hint icon and text bounds never overlap");
+    equal(desktop.panelWidth <= 620, true, "Desktop menu hint remains within its available width");
+
+    const narrow = calculateMenuHintHorizontalLayout({ availableWidth: 320 });
+    equal(narrow.scale < 1, true, "Narrow menu hint scales both groups uniformly");
+    equal(narrow.panelWidth <= 320, true, "Scaled menu hint remains within a narrow content width");
+    equal(narrow.arrowsRight < narrow.textLeft, true, "Scaled menu hint preserves the icon/text gap");
+}
+
+function testLandscapeOrientationGuard(): void {
+    equal(shouldShowLandscapeRotation(390, 844), true, "Portrait frames show the landscape guard");
+    equal(shouldShowLandscapeRotation(844, 390), false, "Landscape frames keep the game visible");
+    equal(shouldShowLandscapeRotation(540, 540), false, "Square frames do not oscillate orientation state");
 }
 
 function calculateMenuCardsForScenario(
@@ -1147,13 +1197,15 @@ async function run(): Promise<void> {
     testTimelineAndSafeAreaMath();
     testSafeBottomVerticalLayout();
     testMenuFooterVerticalLayout();
+    testMenuHintHorizontalLayout();
+    testLandscapeOrientationGuard();
     testMenuCardVisibilityLayout();
     testSongClockCalibrationAndPause();
     testUiStartupRaceAndFallback();
     await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
     await testSongPreviewControllerSerialization();
-    console.log("logic-tests=passed cases=29");
+    console.log("logic-tests=passed cases=31");
 }
 
 run().catch((error) => {
