@@ -931,10 +931,12 @@ export default class GameBootstrap extends cc.Component {
             viewportHeight: this.viewportHeight,
             safeBottom: this.metrics.safe.bottom,
             startButtonHeight: this.menuStartButton.height,
-            startButtonScale: startScale
+            startButtonScale: startScale,
+            showHint: !compact
         });
         this.menuStartButton.scale = startScale;
         this.menuStartButton.setPosition(contentCenterX, footer.startY);
+        this.menuHintRow.active = footer.hintVisible;
         this.menuHintRow.setPosition(contentCenterX, footer.hintY);
         const hint = calculateMenuHintHorizontalLayout({
             availableWidth: Math.min(620, contentWidth - 32)
