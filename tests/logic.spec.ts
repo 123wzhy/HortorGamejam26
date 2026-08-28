@@ -34,7 +34,8 @@ import {
     MenuCardVerticalLayout,
     MenuFooterVerticalLayout,
     RhythmVerticalLayout,
-    shouldShowLandscapeRotation
+    shouldShowLandscapeRotation,
+    shouldUseCompactMenuLayout
 } from "../assets/scripts/ui/RhythmLayout";
 import {
     canEnterGameplay,
@@ -1187,13 +1188,25 @@ function testLandscapeOrientationGuard(): void {
     equal(shouldShowLandscapeRotation(540, 540), false, "Square frames do not oscillate orientation state");
 }
 
-function calculateMenuCardsForScenario(
-    viewportWidth: number,
-    viewportHeight: number,
-    safeTop: number,
-    safeBottom: number
-): MenuCardVerticalLayout {
-    const compact = viewportHeight < 640;
+interface MenuLayoutScenario {
+    designViewport: { width: number; height: number };
+    physicalFrame: { width: number; height: number };
+    safeTop: number;
+    safeBottom: number;
+}
+
+interface MenuLayoutScenarioResult {
+    compact: boolean;
+    footer: MenuFooterVerticalLayout;
+    cards: MenuCardVerticalLayout;
+}
+
+function calculateMenuCardsForScenario(scenario: MenuLayoutScenario): MenuLayoutScenarioResult {
+    const viewportWidth = scenario.designViewport.width;
+    const viewportHeight = scenario.designViewport.height;
+    const safeTop = scenario.safeTop;
+    const safeBottom = scenario.safeBottom;
+    const compact = shouldUseCompactMenuLayout(scenario.physicalFrame.height, viewportHeight);
     const safePressure = Math.min(1, (safeTop + safeBottom) / 150);
     const logoScale = compact ? 0.45 - safePressure * 0.15 : 0.62;
     const startScaleLimit = compact ? 0.62 - safePressure * 0.08 : 0.76;
@@ -1208,12 +1221,13 @@ function calculateMenuCardsForScenario(
     const logoBottom = viewportHeight * 0.5 - safeTop - 12 - 280 * logoScale;
     const panelAspect = 696 / 565;
     const preferredCardWidth = Math.min(310, viewportWidth * 0.28);
-    return calculateMenuCardVerticalLayout({
+    const cards = calculateMenuCardVerticalLayout({
         logoBottom,
         cardBottom: footer.cardBottom,
         preferredCardHeight: preferredCardWidth / panelAspect,
         maximumCardHeight: compact ? 184 : 252
     });
+    return { compact, footer, cards };
 }
 
 function assertVisibleMenuCards(layout: MenuCardVerticalLayout, message: string): void {
@@ -1242,37 +1256,86 @@ function assertHiddenMenuCards(layout: MenuCardVerticalLayout, message: string):
 }
 
 function testMenuCardVisibilityLayout(): void {
+    equal(
+        shouldUseCompactMenuLayout(NaN, 720),
+        false,
+        "Invalid physical frame height falls back to the regular design viewport"
+    );
+    equal(
+        shouldUseCompactMenuLayout(0, 540),
+        true,
+        "Unavailable physical frame height can fall back to a compact design viewport"
+    );
     assertVisibleMenuCards(
-        calculateMenuCardsForScenario(1280, 720, 0, 0),
+        calculateMenuCardsForScenario({
+            designViewport: { width: 1280, height: 720 },
+            physicalFrame: { width: 1280, height: 720 },
+            safeTop: 0,
+            safeBottom: 0
+        }).cards,
         "1280x720 normal menu"
     );
     assertVisibleMenuCards(
-        calculateMenuCardsForScenario(960, 540, 44, 34),
+        calculateMenuCardsForScenario({
+            designViewport: { width: 1280, height: 720 },
+            physicalFrame: { width: 960, height: 540 },
+            safeTop: 44,
+            safeBottom: 34
+        }).cards,
         "960x540 common Builda safe area"
     );
     assertHiddenMenuCards(
-        calculateMenuCardsForScenario(960, 540, 70, 70),
+        calculateMenuCardsForScenario({
+            designViewport: { width: 960, height: 540 },
+            physicalFrame: { width: 960, height: 540 },
+            safeTop: 70,
+            safeBottom: 70
+        }).cards,
         "960x540 70/70 safe area"
     );
     assertHiddenMenuCards(
-        calculateMenuCardsForScenario(960, 540, 60, 63),
+        calculateMenuCardsForScenario({
+            designViewport: { width: 960, height: 540 },
+            physicalFrame: { width: 960, height: 540 },
+            safeTop: 60,
+            safeBottom: 63
+        }).cards,
         "960x540 60/63 safe area"
     );
     assertHiddenMenuCards(
-        calculateMenuCardsForScenario(1280, 720, 81.2, 250),
+        calculateMenuCardsForScenario({
+            designViewport: { width: 1280, height: 720 },
+            physicalFrame: { width: 1280, height: 720 },
+            safeTop: 81.2,
+            safeBottom: 250
+        }).cards,
         "1280x720 81.2/250 safe area"
     );
 }
 
 function testThreeSongRowLayout(): void {
-    const commonSafeArea = calculateMenuCardsForScenario(960, 540, 44, 34);
-    const normal = calculateMenuCardsForScenario(1280, 720, 0, 0);
-    equal(commonSafeArea.visible, true, "Common 960x540 safe area keeps song selection visible");
-    equal(commonSafeArea.cardHeight, 184, "Common 960x540 safe area preserves the compact card height");
-    equal(normal.visible, true, "Normal 1280x720 layout keeps song selection visible");
-    near(normal.cardHeight, 310 * 565 / 696, 0.001, "Normal card size remains unchanged");
+    const commonSafeArea = calculateMenuCardsForScenario({
+        designViewport: { width: 1280, height: 720 },
+        physicalFrame: { width: 960, height: 540 },
+        safeTop: 44,
+        safeBottom: 34
+    });
+    const normal = calculateMenuCardsForScenario({
+        designViewport: { width: 1280, height: 720 },
+        physicalFrame: { width: 1280, height: 720 },
+        safeTop: 0,
+        safeBottom: 0
+    });
+    equal(commonSafeArea.compact, true, "Physical 960x540 frame selects compact menu density");
+    equal(commonSafeArea.footer.hintVisible, false, "Compact physical frame hides the keyboard hint");
+    equal(commonSafeArea.cards.visible, true, "Common 960x540 safe area keeps song selection visible");
+    equal(commonSafeArea.cards.cardHeight, 184, "Common 960x540 frame preserves the compact card height");
+    equal(normal.compact, false, "Physical 1280x720 frame keeps regular menu density");
+    equal(normal.footer.hintVisible, true, "Regular physical frame keeps the keyboard hint");
+    equal(normal.cards.visible, true, "Normal 1280x720 layout keeps song selection visible");
+    near(normal.cards.cardHeight, 310 * 565 / 696, 0.001, "Normal card size remains unchanged");
 
-    [commonSafeArea.cardHeight, normal.cardHeight].forEach((cardHeight) => {
+    [commonSafeArea.cards.cardHeight, normal.cards.cardHeight].forEach((cardHeight) => {
         const layout = calculateSongListVerticalLayout(cardHeight, 3);
         equal(layout.rowCenters.length, 3, cardHeight + "px card allocates exactly three rows");
         equal(layout.rowHeight >= 30, true, cardHeight + "px card keeps rows clickable");

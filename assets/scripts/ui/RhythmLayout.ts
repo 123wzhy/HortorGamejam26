@@ -118,6 +118,7 @@ export interface SongListVerticalLayout {
 }
 
 export const MINIMUM_MENU_CARD_HEIGHT = 184;
+export const COMPACT_MENU_FRAME_HEIGHT = 640;
 
 function finiteOr(value: number, fallback: number): number {
     return isFinite(value) ? value : fallback;
@@ -189,6 +190,19 @@ export function shouldShowLandscapeRotation(frameWidth: number, frameHeight: num
     const width = Math.max(1, finiteOr(frameWidth, 1));
     const height = Math.max(1, finiteOr(frameHeight, 1));
     return height > width;
+}
+
+/**
+ * Selects the menu density from the physical/CSS frame rather than Cocos'
+ * design-coordinate visible size. Invalid frame readings fall back to the
+ * design viewport so startup can still choose a deterministic layout.
+ */
+export function shouldUseCompactMenuLayout(frameHeight: number, fallbackViewportHeight: number): boolean {
+    const fallbackHeight = Math.max(1, finiteOr(fallbackViewportHeight, 720));
+    const resolvedFrameHeight = isFinite(frameHeight) && frameHeight > 0
+        ? frameHeight
+        : fallbackHeight;
+    return resolvedFrameHeight < COMPACT_MENU_FRAME_HEIGHT;
 }
 
 /**
