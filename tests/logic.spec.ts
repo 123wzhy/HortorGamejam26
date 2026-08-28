@@ -1130,25 +1130,37 @@ function testMenuFooterVerticalLayout(): void {
         viewportHeight: 720,
         safeBottom: 0,
         startButtonHeight: 145,
-        startButtonScale: 0.76
+        startButtonScale: 0.76,
+        showHint: true
     });
     assertMenuFooterStack(desktop, "1280x720 menu");
+    equal(desktop.hintVisible, true, "1280x720 keeps the keyboard hint");
 
     const compact = calculateMenuFooterVerticalLayout({
         viewportHeight: 540,
         safeBottom: 0,
         startButtonHeight: 145,
-        startButtonScale: 0.62
+        startButtonScale: 0.62,
+        showHint: false
     });
     assertMenuFooterStack(compact, "960x540 menu");
+    equal(compact.hintVisible, false, "960x540 hides the non-critical keyboard hint");
+    near(compact.startButtonBottom, -258, 0.001, "Compact start button uses the bottom margin");
 
     const compactSafeArea = calculateMenuFooterVerticalLayout({
         viewportHeight: 540,
         safeBottom: 63,
         startButtonHeight: 145,
-        startButtonScale: 0.5544
+        startButtonScale: 0.5544,
+        showHint: false
     });
     assertMenuFooterStack(compactSafeArea, "960x540 scaled safe-area menu");
+    near(
+        compactSafeArea.startButtonBottom,
+        -195,
+        0.001,
+        "Compact start button remains above the bottom safe area"
+    );
 }
 
 function testMenuHintHorizontalLayout(): void {
@@ -1190,7 +1202,8 @@ function calculateMenuCardsForScenario(
         viewportHeight,
         safeBottom,
         startButtonHeight: 145,
-        startButtonScale: startScale
+        startButtonScale: startScale,
+        showHint: !compact
     });
     const logoBottom = viewportHeight * 0.5 - safeTop - 12 - 280 * logoScale;
     const panelAspect = 696 / 565;
@@ -1252,10 +1265,21 @@ function testMenuCardVisibilityLayout(): void {
 }
 
 function testThreeSongRowLayout(): void {
-    [184, 252].forEach((cardHeight) => {
+    const commonSafeArea = calculateMenuCardsForScenario(960, 540, 44, 34);
+    const normal = calculateMenuCardsForScenario(1280, 720, 0, 0);
+    equal(commonSafeArea.visible, true, "Common 960x540 safe area keeps song selection visible");
+    equal(commonSafeArea.cardHeight, 184, "Common 960x540 safe area preserves the compact card height");
+    equal(normal.visible, true, "Normal 1280x720 layout keeps song selection visible");
+    near(normal.cardHeight, 310 * 565 / 696, 0.001, "Normal card size remains unchanged");
+
+    [commonSafeArea.cardHeight, normal.cardHeight].forEach((cardHeight) => {
         const layout = calculateSongListVerticalLayout(cardHeight, 3);
         equal(layout.rowCenters.length, 3, cardHeight + "px card allocates exactly three rows");
         equal(layout.rowHeight >= 30, true, cardHeight + "px card keeps rows clickable");
+        const cardTop = cardHeight * 0.5;
+        const cardBottom = -cardTop;
+        const firstRowTop = layout.rowCenters[0] + layout.rowHeight * 0.5;
+        equal(firstRowTop <= cardTop, true, cardHeight + "px first row stays inside the card");
         for (let index = 1; index < layout.rowCenters.length; index += 1) {
             const previousBottom = layout.rowCenters[index - 1] - layout.rowHeight * 0.5;
             const nextTop = layout.rowCenters[index] + layout.rowHeight * 0.5;
@@ -1267,7 +1291,9 @@ function testThreeSongRowLayout(): void {
             true,
             cardHeight + "px third row does not overlap preview status text"
         );
-        equal(layout.statusBottom >= -cardHeight * 0.5, true, "Status remains inside the card");
+        equal(lastRowBottom >= cardBottom, true, cardHeight + "px third row stays inside the card");
+        equal(layout.statusBottom >= cardBottom, true, cardHeight + "px status stays inside the card");
+        equal(layout.statusTop <= cardTop, true, cardHeight + "px status top stays inside the card");
     });
 }
 
