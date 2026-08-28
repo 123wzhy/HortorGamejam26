@@ -13,6 +13,8 @@ export interface SongAnimationProfile {
 export interface SongDefinition {
     id: string;
     beatmap: Beatmap;
+    previewPath: string;
+    previewVolume: number;
     animation: SongAnimationProfile;
 }
 
@@ -33,6 +35,8 @@ export const DEMO_SONGS: SongDefinition[] = [
     {
         id: DEMO_BEATMAP.id,
         beatmap: DEMO_BEATMAP,
+        previewPath: "audio/bgm/neon-grid-demo-preview.wav",
+        previewVolume: 0.78,
         animation: {
             danceClip: "DanceCombo",
             successResultClip: "ResultPose",
@@ -43,6 +47,8 @@ export const DEMO_SONGS: SongDefinition[] = [
     {
         id: SECOND_DEMO_BEATMAP.id,
         beatmap: SECOND_DEMO_BEATMAP,
+        previewPath: "audio/bgm/golden-stampede-demo-preview.wav",
+        previewVolume: 0.78,
         animation: {
             danceClip: "DanceCombo2",
             successResultClip: "ResultPose2",

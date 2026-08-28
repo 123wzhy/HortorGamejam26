@@ -23,7 +23,11 @@ export type ArtAssetName =
     | "stonePanel"
     | "perfectBadge"
     | "starFilled"
-    | "starEmpty";
+    | "starEmpty"
+    | "songPreviewPlay"
+    | "songPreviewPause"
+    | "songRowSelected"
+    | "songRowIdle";
 
 export const REQUIRED_ART_ASSETS: ArtAssetName[] = [
     "BackGround",
@@ -50,7 +54,11 @@ export const REQUIRED_ART_ASSETS: ArtAssetName[] = [
     "stonePanel",
     "perfectBadge",
     "starFilled",
-    "starEmpty"
+    "starEmpty",
+    "songPreviewPlay",
+    "songPreviewPause",
+    "songRowSelected",
+    "songRowIdle"
 ];
 
 function normalizedName(name: string): string {
