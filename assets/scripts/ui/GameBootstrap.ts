@@ -105,7 +105,8 @@ interface NoteChipView {
 
 interface SongRowView {
     node: cc.Node;
-    background: cc.Sprite;
+    idleBackground: cc.Sprite;
+    selectedBackground: cc.Sprite;
     fallback: cc.Graphics;
     previewButton: cc.Node;
     title: cc.Label;
@@ -308,6 +309,7 @@ export default class GameBootstrap extends cc.Component {
         });
         this.applyArtworkFrame(this.menuTaskArtwork, this.art.get("todayTaskPanel"));
         this.applyArtworkFrame(this.menuSongArtwork, this.art.get("songSelectPanel"));
+        this.menuSongRows.forEach((view) => this.bindSongRowBackgroundFrames(view));
         this.refreshSongRows();
         this.groupRenderKey = "";
     }
@@ -919,7 +921,10 @@ export default class GameBootstrap extends cc.Component {
         this.menuSongRows.forEach((view, rowIndex) => {
             view.node.setContentSize(rowWidth, rowHeight);
             view.node.setPosition(0, firstRowY - rowIndex * rowGap);
-            view.background.node.setContentSize(rowWidth, rowHeight);
+            [view.idleBackground, view.selectedBackground].forEach((background) => {
+                background.node.setContentSize(rowWidth, rowHeight);
+                background.type = cc.Sprite.Type.SLICED;
+            });
 
             view.previewButton.scale = previewScale;
             view.previewButton.setPosition(-rowWidth * 0.5 + rowHeight * 0.58, 0);
@@ -951,11 +956,17 @@ export default class GameBootstrap extends cc.Component {
         node.parent = parent;
         const fallback = node.addComponent(cc.Graphics);
 
-        const backgroundNode = new cc.Node("Background");
-        backgroundNode.parent = node;
-        const background = backgroundNode.addComponent(cc.Sprite);
-        background.sizeMode = cc.Sprite.SizeMode.CUSTOM;
-        background.type = cc.Sprite.Type.SLICED;
+        const idleBackgroundNode = new cc.Node("IdleBackground");
+        idleBackgroundNode.parent = node;
+        const idleBackground = idleBackgroundNode.addComponent(cc.Sprite);
+        idleBackground.sizeMode = cc.Sprite.SizeMode.CUSTOM;
+        idleBackground.type = cc.Sprite.Type.SLICED;
+
+        const selectedBackgroundNode = new cc.Node("SelectedBackground");
+        selectedBackgroundNode.parent = node;
+        const selectedBackground = selectedBackgroundNode.addComponent(cc.Sprite);
+        selectedBackground.sizeMode = cc.Sprite.SizeMode.CUSTOM;
+        selectedBackground.type = cc.Sprite.Type.SLICED;
 
         const previewButton = this.makeSpriteButton(
             node,
@@ -992,7 +1003,23 @@ export default class GameBootstrap extends cc.Component {
             node.scale = 1;
         });
 
-        return { node, background, fallback, previewButton, title, stars, songIndex };
+        const view = {
+            node,
+            idleBackground,
+            selectedBackground,
+            fallback,
+            previewButton,
+            title,
+            stars,
+            songIndex
+        };
+        this.bindSongRowBackgroundFrames(view);
+        return view;
+    }
+
+    private bindSongRowBackgroundFrames(view: SongRowView): void {
+        view.idleBackground.spriteFrame = this.art.get("songRowIdle");
+        view.selectedBackground.spriteFrame = this.art.get("songRowSelected");
     }
 
     private selectedSong(): SongDefinition {
@@ -1059,10 +1086,10 @@ export default class GameBootstrap extends cc.Component {
         this.menuSongRows.forEach((view) => {
             const song = DEMO_SONGS[view.songIndex];
             const selected = view.songIndex === this.selectedSongIndex;
-            const rowFrame = this.art.get(selected ? "songRowSelected" : "songRowIdle");
-            view.background.spriteFrame = rowFrame;
-            view.background.type = cc.Sprite.Type.SLICED;
-            this.drawSongRowFallback(view, selected, !!rowFrame);
+            view.idleBackground.node.active = !selected;
+            view.selectedBackground.node.active = selected;
+            const activeBackground = selected ? view.selectedBackground : view.idleBackground;
+            this.drawSongRowFallback(view, selected, !!activeBackground.spriteFrame);
 
             const difficulty = analyzeBeatmapDifficulty(song.beatmap);
             const previewActive = snapshot.songId === song.id && snapshot.phase !== "idle";
