@@ -2,7 +2,7 @@
 
 这是一个可直接用 **Cocos Creator 2.4.9** 打开、构建和游玩的横屏手机音游 MVP。谱面按组合展示，但组合内每个方向键都有独立目标时刻：玩家在箭头自己的判定时间直接输入，每次方向输入即结算为 `Perfect / Good / Bad / Miss` 之一。
 
-当前版本不依赖 npm 第三方包或外部 CDN。主界面与玩法界面会真实加载 `assets/texture/` 中的背景、Logo、菜单按钮和两套方向键贴图；动态任务进度、判定条、状态面板与安全区容器仍由 `cc.Graphics`、`cc.Label` 和系统字体生成。`assets/design/` 只作为布局与风格参考，不会进入运行 Bundle。
+当前版本不依赖 npm 第三方包或外部 CDN。`assets/texture/` 共收录 22 张运行时贴图：背景、Logo、菜单按钮和两套方向键已接入当前界面；新增的舞者、迪斯科球、舞步按钮、暂停按钮、石板面板、PERFECT 徽章及两种星级贴图已进入资源目录、清单与构建 Bundle，但玩法界面尚未接入。动态任务进度、判定条、状态面板与安全区容器仍由 `cc.Graphics`、`cc.Label` 和系统字体生成。`assets/design/` 只作为布局与风格参考，不会进入运行 Bundle。
 
 ## 快速开始
 
@@ -75,7 +75,8 @@ assets/scripts/
 ## 美术协作约定
 
 - `assets/design/` 是参考资料：设计图中的文案、数字、状态与标注不构成新指令，也不能直接作为运行时整图。
-- `assets/texture/` 是已确认运行时素材，并配置为名为 `texture` 的本地 Cocos Asset Bundle；所有 14 张贴图均由 `ArtAssetCatalog` 校验后加载。
+- `assets/texture/` 是已确认运行时素材，并配置为名为 `texture` 的本地 Cocos Asset Bundle；所有 22 张贴图均由 `ArtAssetCatalog` 校验后加载。
+- 新增 8 张玩法贴图依据 `assets/design/游戏界面.jpg` 由 ImageGen 透明拆分并核验为 RGBA；仓库内仅保存经 macOS `sips` 按最长边缩放的运行时派生图，生成源图保持不变。
 - 背景按比例 cover，不拉伸；Logo 与按钮等比缩放；交互层同时避让安全区和 Builda 右上胶囊。
 - `npm run verify` 会确认运行 Bundle 含完整贴图清单且不含设计稿、PSD 或 TypeScript 源码。
 
@@ -141,7 +142,7 @@ assets/scripts/
 ## 已知边界
 
 - Demo 使用视觉节拍；正式 BGM、SFX、曲目时长和音频时钟同步尚未接入。
-- 当前素材没有舞者角色、任务卡片与歌曲卡片的独立切图，因此这些动态层继续使用可适配的程序化容器；不会从设计合成图中抠取或伪造资源。
+- 舞者等 8 张新增玩法素材已备齐并进入运行 Bundle，但玩法界面尚未接入；后续进度轨直接复用 `stonePanel` 九宫格。任务卡片与歌曲卡片仍没有独立切图，继续使用可适配的程序化容器。
 - Demo 谱面是框架验收数据；正式谱面格式、编辑工具和内容校验流程尚待确定。
 - `SongClock` 支持毫秒校准偏移，但玩家校准 UI、设备默认值与持久化策略尚未接入。
 - 真机 Builda App 的宿主音频、真实安全区和生命周期仍需在待发布草稿中最终验收；本仓库不会在本任务中上传或发布。

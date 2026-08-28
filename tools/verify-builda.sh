@@ -48,7 +48,7 @@ if [ ! -f "$ART_CONFIG" ]; then
   echo "error: runtime texture bundle was not built" >&2
   exit 1
 fi
-for ART_NAME in BackGround logo startBtn settingBtn rankBtn helpBtn leftArrow downArrow upArrow rightArrow leftArrow2 downArrow2 upArrow2 rightArrow2; do
+for ART_NAME in BackGround logo startBtn settingBtn rankBtn helpBtn leftArrow downArrow upArrow rightArrow leftArrow2 downArrow2 upArrow2 rightArrow2 gameplayDancer discoBall danceBtnA pauseBtn stonePanel perfectBadge starFilled starEmpty; do
   if ! grep -q "\"$ART_NAME\"" "$ART_CONFIG"; then
     echo "error: runtime texture bundle is missing $ART_NAME" >&2
     exit 1

@@ -12,7 +12,15 @@ export type ArtAssetName =
     | "leftArrow2"
     | "downArrow2"
     | "upArrow2"
-    | "rightArrow2";
+    | "rightArrow2"
+    | "gameplayDancer"
+    | "discoBall"
+    | "danceBtnA"
+    | "pauseBtn"
+    | "stonePanel"
+    | "perfectBadge"
+    | "starFilled"
+    | "starEmpty";
 
 export const REQUIRED_ART_ASSETS: ArtAssetName[] = [
     "BackGround",
@@ -28,7 +36,15 @@ export const REQUIRED_ART_ASSETS: ArtAssetName[] = [
     "leftArrow2",
     "downArrow2",
     "upArrow2",
-    "rightArrow2"
+    "rightArrow2",
+    "gameplayDancer",
+    "discoBall",
+    "danceBtnA",
+    "pauseBtn",
+    "stonePanel",
+    "perfectBadge",
+    "starFilled",
+    "starEmpty"
 ];
 
 function normalizedName(name: string): string {
