@@ -10,7 +10,7 @@
 
 - macOS 上安装 Cocos Creator `2.4.9`，默认路径为 `/Applications/Cocos/Creator/2.4.9/CocosCreator.app`。
 - Node.js 14+ 与全局 `tsc` 用于纯逻辑测试；本项目不执行 `npm install`。
-- `zip`、`unzip` 与 `jq` 用于生成和检查 Builda H5 Bundle；项目内 Builda 工具与 17 张贴图清单门禁都会调用 `jq`。
+- `zip`、`unzip` 与 `jq` 用于生成和检查 Builda H5 Bundle；项目内 Builda 工具与 25 张贴图清单门禁都会调用 `jq`。
 - 项目内 BuildaGame 工具链版本为 `0.4.36`。
 
 在 Creator 中选择“打开其他项目”，打开本仓库根目录，运行起始场景 `assets/Scene/Main.fire` 即可预览。设计分辨率为 `1280 × 720`，Canvas 固定高度并适配不同横屏宽高比。
