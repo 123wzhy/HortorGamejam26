@@ -541,7 +541,11 @@ export default class GameBootstrap extends cc.Component {
         this.menuSongRowsRoot = new cc.Node("SongRows");
         this.menuSongRowsRoot.parent = this.menuSongPanel;
         DEMO_SONGS.forEach((_song, songIndex) => {
-            this.menuSongRows.push(this.makeSongRow(this.menuSongRowsRoot, songIndex));
+            this.menuSongRows.push(this.makeSongRow(
+                this.menuSongRowsRoot,
+                this.menuSongPanel,
+                songIndex
+            ));
         });
         this.menuSongStatusLabel = this.makeLabel(
             this.menuSongPanel,
@@ -550,6 +554,7 @@ export default class GameBootstrap extends cc.Component {
             11,
             cc.color(238, 220, 183)
         );
+        this.enforceSongPanelLayerOrder();
         this.refreshSongRows();
 
         this.menuHintRow = new cc.Node("ControlHint");
@@ -1049,12 +1054,16 @@ export default class GameBootstrap extends cc.Component {
 
         this.menuSongRowsRoot.setContentSize(cardWidth, cardHeight);
         this.menuSongRows.forEach((view, rowIndex) => {
+            const rowY = firstRowY - rowIndex * rowGap;
             view.node.setContentSize(rowWidth, rowHeight);
-            view.node.setPosition(0, firstRowY - rowIndex * rowGap);
+            view.node.setPosition(0, rowY);
             [view.idleBackground, view.selectedBackground].forEach((background) => {
                 background.node.setContentSize(rowWidth, rowHeight);
+                background.node.setPosition(0, rowY);
                 background.type = cc.Sprite.Type.SLICED;
             });
+            view.fallback.node.setContentSize(rowWidth, rowHeight);
+            view.fallback.node.setPosition(0, rowY);
 
             view.previewButton.scale = previewScale;
             view.previewButton.setPosition(-rowWidth * 0.5 + rowHeight * 0.58, 0);
@@ -1078,6 +1087,7 @@ export default class GameBootstrap extends cc.Component {
         this.menuSongStatusLabel.lineHeight = Math.round(this.menuSongStatusLabel.fontSize * 1.15);
         this.menuSongStatusLabel.node.setContentSize(Math.max(120, rowWidth), Math.max(22, cardHeight * 0.12));
         this.menuSongStatusLabel.node.setPosition(0, -cardHeight * 0.285);
+        this.enforceSongPanelLayerOrder();
         this.refreshSongRows();
     }
 
@@ -1112,22 +1122,29 @@ export default class GameBootstrap extends cc.Component {
         this.orientationLabel.node.setPosition(0, 0);
     }
 
-    private makeSongRow(parent: cc.Node, songIndex: number): SongRowView {
+    private makeSongRow(
+        contentParent: cc.Node,
+        backgroundParent: cc.Node,
+        songIndex: number
+    ): SongRowView {
         const node = new cc.Node("SongRow-" + (songIndex + 1));
-        node.parent = parent;
-        const fallback = node.addComponent(cc.Graphics);
+        node.parent = contentParent;
 
-        const idleBackgroundNode = new cc.Node("IdleBackground");
-        idleBackgroundNode.parent = node;
+        const idleBackgroundNode = new cc.Node("SongRowIdleBackground-" + (songIndex + 1));
+        idleBackgroundNode.parent = backgroundParent;
         const idleBackground = idleBackgroundNode.addComponent(cc.Sprite);
         idleBackground.sizeMode = cc.Sprite.SizeMode.CUSTOM;
         idleBackground.type = cc.Sprite.Type.SLICED;
 
-        const selectedBackgroundNode = new cc.Node("SelectedBackground");
-        selectedBackgroundNode.parent = node;
+        const selectedBackgroundNode = new cc.Node("SongRowSelectedBackground-" + (songIndex + 1));
+        selectedBackgroundNode.parent = backgroundParent;
         const selectedBackground = selectedBackgroundNode.addComponent(cc.Sprite);
         selectedBackground.sizeMode = cc.Sprite.SizeMode.CUSTOM;
         selectedBackground.type = cc.Sprite.Type.SLICED;
+
+        const fallbackNode = new cc.Node("SongRowFallbackBackground-" + (songIndex + 1));
+        fallbackNode.parent = backgroundParent;
+        const fallback = fallbackNode.addComponent(cc.Graphics);
 
         const previewButton = this.makeSpriteButton(
             node,
@@ -1183,6 +1200,34 @@ export default class GameBootstrap extends cc.Component {
     private bindSongRowBackgroundFrames(view: SongRowView): void {
         view.idleBackground.spriteFrame = this.art.get("songRowIdle");
         view.selectedBackground.spriteFrame = this.art.get("songRowSelected");
+    }
+
+    private enforceSongPanelLayerOrder(): void {
+        if (!this.menuSongArtwork || !this.menuSongRowsRoot || !this.menuSongStatusLabel) {
+            return;
+        }
+        const overlayNodes: cc.Node[] = [];
+        this.menuSongRows.forEach((view) => {
+            overlayNodes.push(
+                view.idleBackground.node,
+                view.selectedBackground.node,
+                view.fallback.node
+            );
+        });
+        const contentNodes = [
+            this.menuSongTitle.node,
+            this.menuSongRowsRoot,
+            this.menuSongStatusLabel.node
+        ];
+        const orderedNodes = [this.menuSongArtwork].concat(overlayNodes, contentNodes);
+        orderedNodes.forEach((node, siblingIndex) => node.setSiblingIndex(siblingIndex));
+        this.menuSongArtwork.zIndex = 0;
+        overlayNodes.forEach((node) => {
+            node.zIndex = 1;
+        });
+        contentNodes.forEach((node) => {
+            node.zIndex = 2;
+        });
     }
 
     private makeTaskRow(
@@ -1312,6 +1357,7 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private drawSongRowFallback(view: SongRowView, selected: boolean, hasFrame: boolean): void {
+        view.fallback.node.active = !hasFrame;
         view.fallback.clear();
         if (hasFrame) {
             return;
