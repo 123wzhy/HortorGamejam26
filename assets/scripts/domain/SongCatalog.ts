@@ -1,4 +1,9 @@
-import { Beatmap, DEMO_BEATMAP, SECOND_DEMO_BEATMAP } from "./Beatmap";
+import {
+    ARE_YOU_OK_BEATMAP,
+    Beatmap,
+    FENG_WU_JIU_TIAN_BEATMAP,
+    ZHU_ZHU_XIA_BEATMAP
+} from "./Beatmap";
 
 export type DancerClipName = "IdleSway" | "IdleSway0" | "DanceCombo" | "DanceCombo2"
     | "ResultPose" | "ResultPose2" | "ResultPose3";
@@ -12,9 +17,12 @@ export interface SongAnimationProfile {
 
 export interface SongDefinition {
     id: string;
+    artist: string;
     beatmap: Beatmap;
-    previewPath: string;
+    audioPath: string;
+    audioDurationMs: number;
     previewVolume: number;
+    gameplayVolume: number;
     animation: SongAnimationProfile;
 }
 
@@ -33,6 +41,8 @@ export interface SongSessionConfig {
     groupCount: number;
     noteCount: number;
     songDurationMs: number;
+    estimatedCompletionMs: number;
+    audioDurationMs: number;
     danceDurationMs: number;
 }
 
@@ -41,12 +51,15 @@ export const PASS_PERCENT = 60;
 export const FIRST_DANCE_DURATION_MS = 26800.00114440918;
 export const SECOND_DANCE_DURATION_MS = 20466.66717529297;
 
-export const DEMO_SONGS: SongDefinition[] = [
+export const SONG_CATALOG: SongDefinition[] = [
     {
-        id: DEMO_BEATMAP.id,
-        beatmap: DEMO_BEATMAP,
-        previewPath: "audio/bgm/neon-grid-demo-preview.wav",
+        id: FENG_WU_JIU_TIAN_BEATMAP.id,
+        artist: "凤舞九天",
+        beatmap: FENG_WU_JIU_TIAN_BEATMAP,
+        audioPath: "audio/bgm/feng-wu-jiu-tian.mp3",
+        audioDurationMs: 599928.125,
         previewVolume: 0.78,
+        gameplayVolume: 0.86,
         animation: {
             danceClip: "DanceCombo",
             successResultClip: "ResultPose",
@@ -55,15 +68,33 @@ export const DEMO_SONGS: SongDefinition[] = [
         }
     },
     {
-        id: SECOND_DEMO_BEATMAP.id,
-        beatmap: SECOND_DEMO_BEATMAP,
-        previewPath: "audio/bgm/golden-stampede-demo-preview.wav",
+        id: ZHU_ZHU_XIA_BEATMAP.id,
+        artist: "陈洁丽",
+        beatmap: ZHU_ZHU_XIA_BEATMAP,
+        audioPath: "audio/bgm/zhu-zhu-xia.mp3",
+        audioDurationMs: 218462,
         previewVolume: 0.78,
+        gameplayVolume: 0.86,
         animation: {
             danceClip: "DanceCombo2",
             successResultClip: "ResultPose2",
             failureResultClip: "ResultPose3",
             danceDurationMs: SECOND_DANCE_DURATION_MS
+        }
+    },
+    {
+        id: ARE_YOU_OK_BEATMAP.id,
+        artist: "雷军",
+        beatmap: ARE_YOU_OK_BEATMAP,
+        audioPath: "audio/bgm/are-you-ok.mp3",
+        audioDurationMs: 132806.5,
+        previewVolume: 0.78,
+        gameplayVolume: 0.86,
+        animation: {
+            danceClip: "DanceCombo",
+            successResultClip: "ResultPose",
+            failureResultClip: "ResultPose3",
+            danceDurationMs: FIRST_DANCE_DURATION_MS
         }
     }
 ];
@@ -88,13 +119,21 @@ export function createSongSessionConfig(
     if (!finalNote || !isFinite(finalNote.targetTimeMs)) {
         throw new Error("Song session requires a finite final note time");
     }
+    const songDurationMs = finalNote.targetTimeMs + finalJudgementWindowMs;
+    const estimatedCompletionMs = songDurationMs
+        + song.animation.danceDurationMs / song.beatmap.groups.length;
+    if (estimatedCompletionMs >= song.audioDurationMs) {
+        throw new Error("Song audio must outlast its playable session");
+    }
     return {
         songId: song.id,
         title: song.beatmap.title,
         beatmap: song.beatmap,
         groupCount: song.beatmap.groups.length,
         noteCount: beatmapNoteCount(song.beatmap),
-        songDurationMs: finalNote.targetTimeMs + finalJudgementWindowMs,
+        songDurationMs,
+        estimatedCompletionMs,
+        audioDurationMs: song.audioDurationMs,
         danceDurationMs: song.animation.danceDurationMs
     };
 }
@@ -125,12 +164,12 @@ export function resolveSongOutcome(song: SongDefinition, score: number): SongOut
 }
 
 export function wrappedSongIndex(currentIndex: number, step: number): number {
-    const count = DEMO_SONGS.length;
+    const count = SONG_CATALOG.length;
     const safeCurrent = isFinite(currentIndex) ? Math.floor(currentIndex) : 0;
     const safeStep = isFinite(step) ? Math.floor(step) : 0;
     return ((safeCurrent + safeStep) % count + count) % count;
 }
 
 export function songById(id: string): SongDefinition | null {
-    return DEMO_SONGS.filter((song) => song.id === id)[0] || null;
+    return SONG_CATALOG.filter((song) => song.id === id)[0] || null;
 }

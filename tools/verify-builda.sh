@@ -7,7 +7,7 @@ WEB_DIR="$PROJECT_ROOT/build/web-mobile"
 ZIP_PATH="$PROJECT_ROOT/build/builda-web.zip"
 ASSETS_ZIP_PATH="$PROJECT_ROOT/build/builda-assets.zip"
 
-node "$PROJECT_ROOT/tools/verify-song-previews.mjs"
+node "$PROJECT_ROOT/tools/verify-song-audio.mjs"
 "$PROJECT_ROOT/tools/build-web.sh"
 
 INDEX="$WEB_DIR/index.html"
@@ -130,14 +130,15 @@ if find "$WEB_DIR/assets" -type f -name 'config.json' -exec grep -Eq '主界面|
 fi
 
 rm -f "$ASSETS_ZIP_PATH"
-(cd "$PROJECT_ROOT/assets" && zip -q -r "$ASSETS_ZIP_PATH" audio -x '*.DS_Store' '*.meta')
+(cd "$PROJECT_ROOT/assets" && zip -q "$ASSETS_ZIP_PATH" \
+  audio/bgm/feng-wu-jiu-tian.mp3 \
+  audio/bgm/zhu-zhu-xia.mp3 \
+  audio/bgm/are-you-ok.mp3)
 ASSETS_ZIP_LIST=$(unzip -Z1 "$ASSETS_ZIP_PATH")
 AUDIO_FILE_COUNT=0
 for ASSET_ENTRY in $ASSETS_ZIP_LIST; do
   case "$ASSET_ENTRY" in
-    audio/|audio/bgm/)
-      ;;
-    audio/bgm/neon-grid-demo-preview.wav|audio/bgm/golden-stampede-demo-preview.wav)
+    audio/bgm/feng-wu-jiu-tian.mp3|audio/bgm/zhu-zhu-xia.mp3|audio/bgm/are-you-ok.mp3)
       AUDIO_FILE_COUNT=$((AUDIO_FILE_COUNT + 1))
       ;;
     *)
@@ -146,8 +147,8 @@ for ASSET_ENTRY in $ASSETS_ZIP_LIST; do
       ;;
   esac
 done
-if [ "$AUDIO_FILE_COUNT" -ne 2 ]; then
-  echo "error: expected exactly two audited preview tracks in Builda assets zip" >&2
+if [ "$AUDIO_FILE_COUNT" -ne 3 ]; then
+  echo "error: expected exactly three audited song tracks in Builda assets zip" >&2
   exit 1
 fi
 

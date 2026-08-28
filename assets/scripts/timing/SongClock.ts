@@ -35,6 +35,13 @@ export class SongClock {
         this.start();
     }
 
+    public stop(): void {
+        this.anchorNowMs = 0;
+        this.elapsedBeforeAnchorMs = 0;
+        this.started = false;
+        this.paused = true;
+    }
+
     public pause(): void {
         if (!this.started || this.paused) {
             return;

@@ -5,7 +5,7 @@ description: BuildaGame（Builda）游戏发布助手。当用户要求接入 Bu
 
 # BuildaGame Agent Skill
 
-> BuildaGame agent 工具链版本：0.4.36
+> BuildaGame agent 工具链版本：0.4.37
 
 你是用户的 BuildaGame agent。BuildaGame 是多引擎 H5 游戏发布与展示平台：**Godot Web、HTML5 与 Unity WebGL 发布均已开放**。
 
@@ -148,7 +148,7 @@ mock SDK（Godot：`addons/builda/web/builda-sdk.js`；HTML5/Unity：`.builda-ag
 
 
 导出打包提醒（所有引擎通用）：H5 Bundle zip 里只能包含运行时文件。zip **不打包** SDK JS（`index.html` 引用根路径 `builda-sdk.js`，正式运行时由 Builda App 按 release manifest 的 `sdk` 契约从 CDN 下载注入；旧的内嵌形态仍被接受）。`builda-sdk.d.ts`、`builda-dev-shell.html`、`project.godot`、
-`export_presets.cfg`、`.godot/`、`node_modules/`、sourcemap（`.map`）、`.env`、源码目录和编辑器缓存不能进入 zip；Unity 工程文件同禁（`*.meta`、`*.csproj`、`*.sln`、`*.unity`、`Library/`、`Temp/`、`Obj/`、`ProjectSettings/`——只打包 WebGL 构建输出目录的内容，不要打包 `Assets/` 源码）。`bundle-check` 报这类文件时，重新打包 zip，不要上传。主包超过 50 MiB 时 CLI 会给出非阻断优化提示；新游戏首次上传（还没有 gameId）及普通游戏的应用上限是 200 MiB，已有且归属当前用户的游戏只有被服务端动态白名单命中时才可提高到 `201..500` MiB。不要改 URL、拆请求或伪造 gameId 绕限；需要瘦身时按 `https://ai.builda.game/agent/releases/0.4.36/md_bundle_size.md` 逐类处理（大资源外置 `res/**`、音频/字体/纹理与引擎导出设置）。
+`export_presets.cfg`、`.godot/`、`node_modules/`、sourcemap（`.map`）、`.env`、源码目录和编辑器缓存不能进入 zip；Unity 工程文件同禁（`*.meta`、`*.csproj`、`*.sln`、`*.unity`、`Library/`、`Temp/`、`Obj/`、`ProjectSettings/`——只打包 WebGL 构建输出目录的内容，不要打包 `Assets/` 源码）。`bundle-check` 报这类文件时，重新打包 zip，不要上传。主包超过 50 MiB 时 CLI 会给出非阻断优化提示；新游戏首次上传（还没有 gameId）及普通游戏的应用上限是 200 MiB，已有且归属当前用户的游戏只有被服务端动态白名单命中时才可提高到 `201..500` MiB。不要改 URL、拆请求或伪造 gameId 绕限；需要瘦身时按 `https://ai.builda.game/agent/releases/0.4.37/md_bundle_size.md` 逐类处理（大资源外置 `res/**`、音频/字体/纹理与引擎导出设置）。
 Windows PowerShell 不得直接用 `Compress-Archive` 打构建目录：Windows PowerShell 5.1 可能把 ZIP entry 写成 `assets\icon.png`，服务端会按 zip-slip 安全规则拒绝。统一使用 `.builda-agent\builda.cmd bundle-pack <构建目录> <输出.zip>`；它通过标准 ZIP API 生成 `/` 分隔的 entry。`bundle-check` 也会在上传前拒绝反斜杠、绝对路径、盘符和 `..` 逃逸路径。
 如果本机命令叫 `godot4`，把导出命令里的 `godot` 换成 `godot4`，并先运行 `./.builda-agent/builda godot web-template-check godot4`。
 
@@ -338,7 +338,7 @@ scripts/BuildaClient.gd
 
 privateKV 是当前游戏 × 当前玩家的私域存档，value 是不透明字节流（Godot 侧 `PackedByteArray`，推荐 `var_to_bytes()` 编码、`bytes_to_var()` 还原）。限额：单 value ≤ 32KB、单次批量 ≤ 32 key、每玩家每游戏总活 key ≤ 100（无聚合字节配额，理论容量上限 3.125MiB），超限返回明确错误不静默截断；并发是 last write wins，无版本号。SDK **不会自动拆批**：每次 `getMany`/`setMany`/`removeMany` 最多传 32 个 key，超过时返回 `BATCH_TOO_LARGE`；确需处理更多 key 时，由游戏代码显式切成每批至多 32 个、逐批 `await` 并逐批检查结果，不能假设多批原子成功。启动时读取不超过 32 个 key 时用一次 `getMany`，不要逐 key 串行 `get`。
 
-凡是任务涉及云存档、支付订单去重、排行榜或其他由游戏构造的持久化标识符，必须先读取 `https://ai.builda.game/agent/releases/0.4.36/md_persistent_ids.md`。从 `0.3.1` 起，privateKV key 接受 `^[A-Za-z0-9_:-]{1,64}$`，`payId`、`rankId` 接受 `^[A-Za-z0-9_-]{1,64}$`。新代码统一只使用字母、数字、`_`、`-`，但 `save:main` 等存量 privateKV 冒号 key 可以继续读写删，不得仅因冒号要求迁移或阻断草稿。真正非法的旧数据默认保留，禁止自动 remove。修改 `payId` 会改变商品映射，修改 `rankId` 等价于新榜，执行前必须取得用户明确确认。
+凡是任务涉及云存档、支付订单去重、排行榜或其他由游戏构造的持久化标识符，必须先读取 `https://ai.builda.game/agent/releases/0.4.37/md_persistent_ids.md`。从 `0.3.1` 起，privateKV key 接受 `^[A-Za-z0-9_:-]{1,64}$`，`payId`、`rankId` 接受 `^[A-Za-z0-9_-]{1,64}$`。新代码统一只使用字母、数字、`_`、`-`，但 `save:main` 等存量 privateKV 冒号 key 可以继续读写删，不得仅因冒号要求迁移或阻断草稿。真正非法的旧数据默认保留，禁止自动 remove。修改 `payId` 会改变商品映射，修改 `rankId` 等价于新榜，执行前必须取得用户明确确认。
 
 Godot 侧用 `addons/builda/builda.gd` 包装调用，结果通过 `sdk_result(request_id, result)` signal 返回。默认接入方式是使用 `sdk install` 自动放好的 Autoload `BuildaClient`。如果项目不适合 Autoload，再把同样逻辑挂到主场景的常驻节点上。不要直接调用 `window.__cysjHost` 或 `flutter_inappwebview`；游戏代码应优先调用 Builda SDK，SDK 内部会处理本地 mock 和 Builda App runtime。
 
@@ -350,7 +350,7 @@ Godot 侧用 `addons/builda/builda.gd` 包装调用，结果通过 `sdk_result(r
 
 文本输入：Godot Web 在手机 WebView 里自绘输入框拿不到系统 IME（拼音候选、光标、选区都没有），起名、输入房间号等文本输入一律调 `Builda.input.showInputPanel({placeholder, defaultValue, maxLength})`（Godot 侧 `builda.input_show_panel(placeholder, default_value, max_length)`）——平台弹原生"输入框+键盘"（无标题栏），确认返回 `{confirmed: true, text}`，取消返回 `confirmed: false`。返回的 `text` 已由平台完成敏感词审核与长度截断，游戏拿到直接用、不要再自行送审。改名等回填场景把当前值传 `defaultValue`。面板同刻只允许一个，未关闭时重复调用返回 `BUSY`。**不要**自绘文本框去监听键盘事件。本地 `builda dev` 的 mock 会贴底弹输入条并聚焦真实 input 唤起系统键盘，行为与真机等价。
 
-多语言：游戏若做本地化，用 `Builda.runtime.language()`（Godot 侧 `builda.runtime_language()`）取当前语言，返回 BCP 47 连字符形态的字符串，同步方法、直接返回裸字符串（不需要 await、没有 `ok` 包装），取不到时兜底 `en`、绝不返回空串。平台只给**裸语言码**（`zh`、`en`，不带区域变体，不会出现 `zh-CN`），唯一例外西语为 `es-419`——不要做简繁分支或按区域细分文案的设计。匹配自己语言包时仍按"精确匹配 → 语言前缀降级（如 `es-419` → `es`）→ 游戏默认语言"三级回退，不要只做全等比较。启动时读一次决定加载哪套文案即可；宿主支持运行中切语言，在切场景等节点重读能跟上变化，无需轮询。本地 `builda dev` 的 mock 把浏览器 `navigator.language` 收敛到同一粒度（如 `zh-CN` → `zh`、`es-MX` → `es-419`），测指定语言可在游戏 URL 加 `builda_mock_lang=es-419` 这类参数覆盖。用户要做多语言或遇到 Web 端文字变方块（tofu）时，先读完整实践指南：`https://ai.builda.game/agent/releases/0.4.36/md_godot_i18n.md`（内嵌文案表、字体子集裁剪、排行榜玩家名等开集文本的缺字过滤、日俄长文案排版）。字体口径按引擎区分：Godot Web 导出（wasm 自绘）没有系统字体回退，字体由游戏自行处理并随包分发——全量 CJK 字体禁止直接打进包（用 fontTools 裁子集），也禁止从任何外部 CDN 加载字体（平台不提供共享字体，COEP 下外链会被拦截白屏）；Unity WebGL 同类（TMP 与 legacy Font 都无系统回退，字体内嵌且裁子集；TMP/legacy 选型、i18n 文案表、开集文本缺字过滤见 `https://ai.builda.game/agent/releases/0.4.36/md_unity_webgl.md` 第 5 章——**编辑器 Game 视图有系统字体回退，字体验收必须在 Web 构建里做**）；HTML5 渲染的游戏（pixi/phaser/canvas）相反，**优先直接用系统字体**（见「HTML5 打包」），不要照搬 Godot 的字体裁剪流程。
+多语言：游戏若做本地化，用 `Builda.runtime.language()`（Godot 侧 `builda.runtime_language()`）取当前语言，返回 BCP 47 连字符形态的字符串，同步方法、直接返回裸字符串（不需要 await、没有 `ok` 包装），取不到时兜底 `en`、绝不返回空串。平台只给**裸语言码**（`zh`、`en`，不带区域变体，不会出现 `zh-CN`），唯一例外西语为 `es-419`——不要做简繁分支或按区域细分文案的设计。匹配自己语言包时仍按"精确匹配 → 语言前缀降级（如 `es-419` → `es`）→ 游戏默认语言"三级回退，不要只做全等比较。启动时读一次决定加载哪套文案即可；宿主支持运行中切语言，在切场景等节点重读能跟上变化，无需轮询。本地 `builda dev` 的 mock 把浏览器 `navigator.language` 收敛到同一粒度（如 `zh-CN` → `zh`、`es-MX` → `es-419`），测指定语言可在游戏 URL 加 `builda_mock_lang=es-419` 这类参数覆盖。用户要做多语言或遇到 Web 端文字变方块（tofu）时，先读完整实践指南：`https://ai.builda.game/agent/releases/0.4.37/md_godot_i18n.md`（内嵌文案表、字体子集裁剪、排行榜玩家名等开集文本的缺字过滤、日俄长文案排版）。字体口径按引擎区分：Godot Web 导出（wasm 自绘）没有系统字体回退，字体由游戏自行处理并随包分发——全量 CJK 字体禁止直接打进包（用 fontTools 裁子集），也禁止从任何外部 CDN 加载字体（平台不提供共享字体，COEP 下外链会被拦截白屏）；Unity WebGL 同类（TMP 与 legacy Font 都无系统回退，字体内嵌且裁子集；TMP/legacy 选型、i18n 文案表、开集文本缺字过滤见 `https://ai.builda.game/agent/releases/0.4.37/md_unity_webgl.md` 第 5 章——**编辑器 Game 视图有系统字体回退，字体验收必须在 Web 构建里做**）；HTML5 渲染的游戏（pixi/phaser/canvas）相反，**优先直接用系统字体**（见「HTML5 打包」），不要照搬 Godot 的字体裁剪流程。
 
 麦克风输入（默认路径：`BuildaMic` 内置件，零 JS）：需要持续采集麦克风控制玩法（音量/吹气/音高等）的游戏，优先用随 SDK 分发的 `BuildaMic` 内置件，不要直连 L0/L1 原语。Godot 接入：① `project.godot` 注册 autoload `BuildaMic="*res://addons/builda/mic/builda_mic.gd"`；② 把 `BuildaMic.start()` 挂在任意点击回调上——内置状态机自动处理"两次手势"（第 1 次点击申请权限；`state` 变 `needs_gesture` 时界面引导"再点一次"；第 2 次点击真正开采集；中断恢复失败同样回 `needs_gesture` 复用同一引导）；③ 每帧读 `BuildaMic.volume`（RMS 音量）/ `BuildaMic.pitch`（Hz，无音高为 0）驱动玩法，监听 `state_changed` 信号更新引导 UI，`state == "unavailable"` 时给出清晰的**阻断提示**——说明本游戏需要麦克风、引导玩家重试或去系统设置开启（`unavailable` 态下再次 `BuildaMic.start()` 会重新申请权限），不能黑屏/卡死/静默无响应；无麦替代玩法是可选加分项，不是必须；④ **打包**：Godot 导出后把 `addons/builda/mic/web/` 原样拷进导出目录再压 zip——分析 worker 必须随游戏包分发，`builda dev` 本地会从项目目录自动兜底，别被"本地能跑"骗过，正式包缺文件会 `WORKER_LOAD_FAILED`；⑤ 换算法/加特征只改 `addons/builda/mic/web/builda-mic-worker.js`（重 DSP 就该在这个 Worker 里跑，worker `postMessage` 的对象字段原样出现在 `BuildaMic.features`）——该目录归项目所有，`sdk install` 升级不覆盖，删除目录重装可恢复默认分析器。数据面注意：PCM 不进 GDScript，桥上每帧只有几十字节的特征 JSON。
 
@@ -381,11 +381,11 @@ Unity 接入（`Builda.BuildaMic` 组件，与 Godot 版同构）：① 把 `Bui
 
 ### 排行榜发布配置
 
-用户需要新增、修改或清空排行榜时，先读取完整契约：`https://ai.builda.game/agent/releases/0.4.36/md_rankboards.md`。
+用户需要新增、修改或清空排行榜时，先读取完整契约：`https://ai.builda.game/agent/releases/0.4.37/md_rankboards.md`。
 
 - 排行榜配置只写在 `builda.publish.json` 的 `rankBoards`，不要修改 SDK 或游戏导出包来保存配置。
 - 修改前先确认用户意图是**保持、全量替换还是清空**：省略字段=保持；`[]`=清空全部；非空数组=全量替换。它不是局部 patch，改一个榜也要保留其余目标榜。
-- 每个榜必须显式填写 `rankId/displayName/sortType/cycleType/minScore/maxScore`；最多 5 个榜。`sortType` 只用 `asc|desc`，`cycleType` 只用 `day|week|month|forever`。
+- 每个榜必须显式填写 `rankId/displayName/sortType/cycleType/minScore/maxScore`；最多 100 个榜。`sortType` 只用 `asc|desc`，`cycleType` 只用 `day|week|month|forever`。
 - 新增或修改的 `rankId` 只使用字母、数字、`_`、`-`；不要顺手改已有 `rankId`，改 ID 等价于换榜并可能丢失历史分数。
 - 只改 `displayName` 保留历史分；修改排序、周期或分数范围，以及删除榜单，都会在审核发布后清分。涉及清分时必须先告诉用户影响并取得明确确认。
 - 修改 manifest 后核对游戏代码使用的 `rankId` 与目标榜单一致。草稿同步成功后仍要提醒用户去 Builda App 重新发布并完成审核，线上配置才会变化。
@@ -497,7 +497,7 @@ func play_hit_sound() -> void:
 
 ### res/** 大资源动态加载（3D 模型等）
 
-用户抱怨包体太大、上传超限或想做"资源分包/动态加载"时，先读完整专题：`https://ai.builda.game/agent/releases/0.4.36/md_bundle_size.md`（诊断方法、外置决策、音频/字体/纹理/引擎导出全套瘦身手段、上传前检查清单，以及 Godot 资源分包实战避坑——Web 下载落盘、静态引用链、preset 生成、按需加载审计）。
+用户抱怨包体太大、上传超限或想做"资源分包/动态加载"时，先读完整专题：`https://ai.builda.game/agent/releases/0.4.37/md_bundle_size.md`（诊断方法、外置决策、音频/字体/纹理/引擎导出全套瘦身手段、上传前检查清单，以及 Godot 资源分包实战避坑——Web 下载落盘、静态引用链、preset 生成、按需加载审计）。
 
 `res/**` 与 `audio/**` 的关键差别：音频由宿主 App 播放，`res/**` 由**游戏代码自己 fetch**。统一规则：
 
@@ -627,7 +627,7 @@ fight 格斗
 
 评估方法：按构建真正的运行要求找证据，而不是凭感觉。参考点——WASM 引擎导出（如 Godot 4 Web、Unity WebGL/IL2CPP）的下限由编译工具链决定：新版 Emscripten 默认启用一批后 MVP 的 WASM 特性（sign-extension / bulk memory 约 Chrome 74–75，WASM-BigInt 约 Chrome 85），实际下限通常落在 Chrome 75–85 / iOS 15 区间，应查引擎官方最低浏览器要求或导出工具链（Emscripten）的 minimum-browser 配置；查不到可靠依据就用平台基线 `80` / `15`，不要为引擎导出虚低声明。纯 canvas/DOM、JS 已降级的 H5 游戏才可能显著低于基线；构建里用了更新的 Web API（如 OffscreenCanvas、WebGPU、未降级的较新 ES 语法）则相应调高。老项目的 `builda.publish.json` 可能没有这两个键，提交草稿前同样先评估再补写。
 
-默认 manifest 故意省略 `rankBoards`，表示普通更新保持已有排行榜。需要配置排行榜时按 `https://ai.builda.game/agent/releases/0.4.36/md_rankboards.md` 添加完整数组；只有用户明确要求清空全部榜单时才写 `"rankBoards": []`。
+默认 manifest 故意省略 `rankBoards`，表示普通更新保持已有排行榜。需要配置排行榜时按 `https://ai.builda.game/agent/releases/0.4.37/md_rankboards.md` 添加完整数组；只有用户明确要求清空全部榜单时才写 `"rankBoards": []`。
 
 `builda upload-build` 成功后会把响应里的 `prefix`、`entry`、`size` 和 `bundleUrl/bundleMd5/bundleVersion/bundleEntry/bundleSize` 写回 manifest。前者用于 Builda 在线试玩，后者用于 Builda App 下载、校验和本地 WebView 缓存。自动写入失败时必须手动照抄；这一步错了，草稿就没有可玩的入口或 App Bundle。
 
@@ -637,7 +637,7 @@ Builda Online Room 只在用户明确要求时按“Builda Online 联机”章�
 
 当用户需求或问题提到手机发热、掉帧、高 DPI、DPR、`devicePixelRatio`、WebGL 显存、丢上下文、移动端性能、iPhone/iPad 清晰度或宿主 App 控制渲染分辨率时，按本节接入 `mobile-perf.js`，并确保它在 Godot 引擎创建画布之前执行。
 
-<!-- builda-agent-version: 0.4.36 -->
+<!-- builda-agent-version: 0.4.37 -->
 # 动态 DPR（渲染分辨率上限，由宿主 App 控制）
 
 > 本节示例与导出配置以 Godot Web 为主；HTML5 项目（pixi/phaser）同理——把 `mobile-perf.js` 放在引擎/渲染器初始化之前的 `<head>` 里即可，pixi/phaser 的 `resolution` 选项也应读取覆盖后的 `devicePixelRatio`。
@@ -711,7 +711,7 @@ html/head_include="<script src=\"mobile-perf.js\"></script><script src=\"builda-
 - 新游戏：`publish <build.zip>` 自动执行 `upload-build -> 等待 ready -> create-draft`，成功后才写入 gameId 并汇报 Builda 当前版本已更新、cysj 待发布草稿已同步；首次上传期间没有 gameId，不得预创建空游戏。
 - 更新已有游戏：当前项目目录里有 `.builda-agent/game.json` 时，`publish <build.zip>` 自动执行 `upload-build -> 等待 ready -> update-draft`，然后停止并作同样汇报。
 - 无论新建还是更新，提交草稿前确认 manifest 已把 `minChromeMajor` / `minIOSMajor` 从占位值评估填写为构建实际能跑的最低版本（越低触达越广，见"Manifest"一节）；老 manifest 没有这两个键时先评估再补写，preflight 会拒绝缺失或占位的提交。
-- 涉及 privateKV、支付或排行榜改动时，按 `https://ai.builda.game/agent/releases/0.4.36/md_persistent_ids.md` 核对稳定标识符设计；不要随意改动已有 `privateKV key`、`payId` 或 `rankId`。
+- 涉及 privateKV、支付或排行榜改动时，按 `https://ai.builda.game/agent/releases/0.4.37/md_persistent_ids.md` 核对稳定标识符设计；不要随意改动已有 `privateKV key`、`payId` 或 `rankId`。
 - `.builda-agent/game.json` 是项目身份文件，放在当前项目的 `.builda-agent/` 目录里。它记录 `gameId/title/lastVersionId/updatedAt`，一个项目一个文件；用户同时维护多个游戏时，agent 必须先进入对应项目目录再操作。
 - `create-draft` 成功后 CLI 会自动写入 `.builda-agent/game.json`。`update-draft` 成功后也会更新它。
 - 如果当前项目没有 `.builda-agent/game.json`，但用户明确说这是已有游戏，必须让用户提供一次目标 `game_id`，执行 `update-draft <game_id>`；成功后 CLI 会把绑定写入当前项目目录。
@@ -764,7 +764,7 @@ Windows PowerShell 对应打包命令：
 HTML5 项目（engine=h5）上传的是**构建产物**，不是源码工程：
 
 1. 先跑项目自己的构建（如 `npm run build`），得到自包含的静态目录（常见 `dist/` / `build/`）。**入口必须是根目录 `index.html`**，且 `<head>` 里保留 `<script src="builda-sdk.js"></script>` 引用（见“SDK 接入（HTML5）”）。
-2. 构建产物必须离线自包含：所有 JS/CSS/图片/音频随包分发，不允许引用任何外部 CDN。字体**优先用系统字体**——H5 渲染（pixi/phaser/canvas）走浏览器文本管线，自带含中文在内的系统字体回退，`font-family` 写通用字体栈即可，中文不需要打包字体；只有品牌/美术字这类自定义字体才随包分发，其中大字体（含 CJK）裁剪子集后入包（裁剪方法参考 `https://ai.builda.game/agent/releases/0.4.36/md_godot_i18n.md` §2，Godot 专属部分忽略）。关闭 sourcemap——zip 里出现 `.map` 会被 bundle-check 拒绝。
+2. 构建产物必须离线自包含：所有 JS/CSS/图片/音频随包分发，不允许引用任何外部 CDN。字体**优先用系统字体**——H5 渲染（pixi/phaser/canvas）走浏览器文本管线，自带含中文在内的系统字体回退，`font-family` 写通用字体栈即可，中文不需要打包字体；只有品牌/美术字这类自定义字体才随包分发，其中大字体（含 CJK）裁剪子集后入包（裁剪方法参考 `https://ai.builda.game/agent/releases/0.4.37/md_godot_i18n.md` §2，Godot 专属部分忽略）。关闭 sourcemap——zip 里出现 `.map` 会被 bundle-check 拒绝。
 3. 把构建目录内容打成 zip（zip 根直接是 `index.html`，不要套一层目录）：
 
 ```bash
@@ -799,12 +799,12 @@ Cocos Creator 游戏按 **HTML5（engine=h5）** 方式对接：构建平台选 
 
 ## Unity WebGL 导出
 
-Unity 项目（engine=unity）上传的是 **WebGL 构建输出**，不是 Unity 工程。完整导出专题（含常见坑）见 `https://ai.builda.game/agent/releases/0.4.36/md_unity_webgl.md`，要点：
+Unity 项目（engine=unity）上传的是 **WebGL 构建输出**，不是 Unity 工程。完整导出专题（含常见坑）见 `https://ai.builda.game/agent/releases/0.4.37/md_unity_webgl.md`，要点：
 
 1. 环境要求：Unity 2021.3 LTS+，已安装 WebGL Build Support module。确认已按「SDK 接入（Unity）」完成 `sdk install` 并在 Player Settings 选择 **Builda** WebGL Template（SDK 引用契约，bundle-check 硬查）。
 2. **压缩设置（设错直接被拒）**：`Player Settings → Publishing Settings`，Compression Format 选 **Brotli/Gzip 且勾选 Decompression Fallback**（推荐，产物 `Build/*.unityweb`），或选 **Disabled**（裸产物兜底）。**开压缩但不勾 Fallback 的 `.br`/`.gz` 产物会被硬拒**。
 3. WASM 内存 ≤1GiB（Player Settings → Publishing Settings → Memory 相关配置），超限在移动端 WebView 大概率起不来。
-4. 字体：WebGL 下 TMP 与 legacy Font 都没有系统字体回退（编辑器里有——Game 视图效果不可信），CJK 文本必须内嵌字体且用 fontTools 裁剪子集，全量 CJK 字体不要直接入包；排行榜玩家名等开集文本要做运行时缺字过滤。做多语言或字体前先读 `https://ai.builda.game/agent/releases/0.4.36/md_unity_webgl.md` 第 5 章（TMP/legacy 选型、includeFontData 陷阱、裁剪与缺字过滤全流程）。
+4. 字体：WebGL 下 TMP 与 legacy Font 都没有系统字体回退（编辑器里有——Game 视图效果不可信），CJK 文本必须内嵌字体且用 fontTools 裁剪子集，全量 CJK 字体不要直接入包；排行榜玩家名等开集文本要做运行时缺字过滤。做多语言或字体前先读 `https://ai.builda.game/agent/releases/0.4.37/md_unity_webgl.md` 第 5 章（TMP/legacy 选型、includeFontData 陷阱、裁剪与缺字过滤全流程）。
 5. `File → Build Settings → WebGL → Build`，输出到项目内临时目录（如 `Builds/WebGL`）。产物应为根 `index.html` + `Build/` 四件套（`*.loader.js`/`*.framework.js`/`*.wasm`/`*.data`，允许 `.unityweb` 后缀）+ `TemplateData/` + 可选 `StreamingAssets/`。`Build/` 是默认输出目录名，勿改。
 6. 把构建输出目录内容打成 zip（zip 根直接是 `index.html`）：
 

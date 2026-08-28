@@ -30,9 +30,9 @@ export type GroupDanceTransition = {
 };
 
 /**
- * Owns the deterministic pause between beat groups. The optional dancer asset
- * follows this clock, never the other way around, so a failed async load cannot
- * block the next group.
+ * Owns the deterministic input-locked dance interval between beat groups. The
+ * optional dancer asset follows this clock, never the other way around, so a
+ * failed async load cannot block the next group or stop the song clock.
  */
 export class GroupDanceFlow {
     private readonly groupCount: number;

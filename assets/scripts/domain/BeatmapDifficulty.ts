@@ -30,8 +30,8 @@ function sortedNotes(beatmap: Beatmap): BeatNote[] {
 }
 
 /**
- * Rates a generated chart, not its audio file. The generator remains the source
- * of truth for note timing; this pass turns measurable chart pressure into the
+ * Rates an authored chart, not its audio file. The beatmap remains the source of
+ * truth for note timing; this pass turns measurable chart pressure into the
  * three-star scale used by the song-selection UI.
  */
 export function analyzeBeatmapDifficulty(beatmap: Beatmap): BeatmapDifficultyAnalysis {
@@ -71,9 +71,8 @@ export function analyzeBeatmapDifficulty(beatmap: Beatmap): BeatmapDifficultyAna
         + variationPressure * 0.12
         + rapidPressure * 0.18
     );
-    // A three-step display needs broad bands rather than a five-star game's
-    // narrow top tier. These cutoffs keep a one-beat 100 BPM chart at Normal
-    // while promoting the denser 120 BPM chart to Hard.
+    // A three-step display uses broad bands so tempo, density, directional
+    // variation and half-beat pressure remain visible on a compact song row.
     const stars: DifficultyStars = score >= 0.46 ? 3 : score >= 0.28 ? 2 : 1;
 
     return {
