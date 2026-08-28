@@ -82,6 +82,58 @@
       "animationFrameRate": 30,
       "subMetas": {}
     },
+    "DanceCombo2.sac": {
+      "ver": "1.0.3",
+      "uuid": "66ac22ee-4d6e-4aab-8175-b021091218d5",
+      "importer": "skeleton-animation-clip",
+      "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
+      "animationID": 3,
+      "name": "DanceCombo2.sac",
+      "maxFrameCount": 615,
+      "totalFrameCount": 12914,
+      "duration": 20.46666717529297,
+      "animationFrameRate": 30,
+      "subMetas": {}
+    },
+    "ResultPose2.sac": {
+      "ver": "1.0.3",
+      "uuid": "8e16b104-c4e9-4bd7-950e-3f66e9c67cd6",
+      "importer": "skeleton-animation-clip",
+      "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
+      "animationID": 4,
+      "name": "ResultPose2.sac",
+      "maxFrameCount": 565,
+      "totalFrameCount": 11868,
+      "duration": 18.80000114440918,
+      "animationFrameRate": 30,
+      "subMetas": {}
+    },
+    "ResultPose3.sac": {
+      "ver": "1.0.3",
+      "uuid": "724a6bc4-8813-4ad9-9657-91d35b62ad02",
+      "importer": "skeleton-animation-clip",
+      "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
+      "animationID": 5,
+      "name": "ResultPose3.sac",
+      "maxFrameCount": 116,
+      "totalFrameCount": 2433,
+      "duration": 3.8333334922790527,
+      "animationFrameRate": 30,
+      "subMetas": {}
+    },
+    "IdleSway0.sac": {
+      "ver": "1.0.3",
+      "uuid": "7ac1980e-36d1-41c3-bb4d-2529a29a3b49",
+      "importer": "skeleton-animation-clip",
+      "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
+      "animationID": 6,
+      "name": "IdleSway0.sac",
+      "maxFrameCount": 33,
+      "totalFrameCount": 945,
+      "duration": 1.0666667222976685,
+      "animationFrameRate": 30,
+      "subMetas": {}
+    },
     "BullDancer.prefab": {
       "ver": "1.3.2",
       "uuid": "645065fb-eb39-42f3-af21-bb84bc9d90f2",
