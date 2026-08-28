@@ -105,6 +105,16 @@ export interface MenuCardVerticalLayout {
     logoCardGap: number;
 }
 
+export interface SongListVerticalLayout {
+    rowHeight: number;
+    rowGap: number;
+    rowCenters: number[];
+    statusY: number;
+    statusHeight: number;
+    statusTop: number;
+    statusBottom: number;
+}
+
 function finiteOr(value: number, fallback: number): number {
     return isFinite(value) ? value : fallback;
 }
@@ -245,6 +255,37 @@ export function calculateMenuCardVerticalLayout(
         availableCardHeight,
         minimumReadableHeight,
         logoCardGap
+    };
+}
+
+/** Fits every selectable song row above the persistent preview status line. */
+export function calculateSongListVerticalLayout(
+    cardHeightInput: number,
+    rowCountInput: number
+): SongListVerticalLayout {
+    const cardHeight = Math.max(96, finiteOr(cardHeightInput, 184));
+    const rowCount = Math.max(1, Math.floor(finiteOr(rowCountInput, 1)));
+    const statusHeight = clamp(cardHeight * 0.105, 18, 24);
+    const statusBottom = -cardHeight * 0.5 + Math.max(8, cardHeight * 0.05);
+    const statusY = statusBottom + statusHeight * 0.5;
+    const statusTop = statusY + statusHeight * 0.5;
+    const listTop = cardHeight * 0.28;
+    const listBottom = statusTop + 6;
+    const rowGap = clamp(cardHeight * 0.025, 3, 6);
+    const availableHeight = Math.max(1, listTop - listBottom - rowGap * (rowCount - 1));
+    const rowHeight = clamp(availableHeight / rowCount, 30, 52);
+    const rowCenters: number[] = [];
+    for (let index = 0; index < rowCount; index += 1) {
+        rowCenters.push(listTop - rowHeight * 0.5 - index * (rowHeight + rowGap));
+    }
+    return {
+        rowHeight,
+        rowGap,
+        rowCenters,
+        statusY,
+        statusHeight,
+        statusTop,
+        statusBottom
     };
 }
 

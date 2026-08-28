@@ -8,7 +8,7 @@ import {
 import {
     beatmapNoteCount,
     createSongSessionConfig,
-    DEMO_SONGS,
+    SONG_CATALOG,
     resolveSongOutcome,
     SongDefinition,
     SongOutcome,
@@ -33,6 +33,7 @@ import {
     calculateMenuHintHorizontalLayout,
     calculateNoteChipVerticalLayout,
     calculateRhythmVerticalLayout,
+    calculateSongListVerticalLayout,
     shouldShowLandscapeRotation
 } from "./RhythmLayout";
 import { SongPreviewController, SongPreviewSnapshot } from "./SongPreviewController";
@@ -136,7 +137,7 @@ export default class GameBootstrap extends cc.Component {
     private readonly songPreview: SongPreviewController = new SongPreviewController(this.adapter);
     private readonly clock: SongClock = new SongClock();
     private readonly judge: JudgeSystem = new JudgeSystem();
-    private activeSong: SongDefinition = DEMO_SONGS[0];
+    private activeSong: SongDefinition = SONG_CATALOG[0];
     private activeSession: SongSessionConfig = createSongSessionConfig(
         this.activeSong,
         DEFAULT_JUDGE_WINDOWS.badMs
@@ -234,7 +235,7 @@ export default class GameBootstrap extends cc.Component {
     private gameplayStartPending: boolean = false;
     private gameplayStartRequestId: number = 0;
     private pausedByHost: boolean = false;
-    private clockHeldForDanceFlow: boolean = false;
+    private restartAfterHostResume: boolean = false;
     private hostSuspended: boolean = false;
     private completionRecordedForRun: boolean = false;
     private currentOutcome: SongOutcome | null = null;
@@ -387,7 +388,8 @@ export default class GameBootstrap extends cc.Component {
     }
 
     protected update(deltaSeconds: number): void {
-        if (!this.gameplayActive || !canEnterGameplay(this.startupState) || this.hostSuspended) {
+        if (!this.gameplayActive || this.gameplayStartPending
+            || !canEnterGameplay(this.startupState) || this.hostSuspended) {
             return;
         }
 
@@ -542,7 +544,7 @@ export default class GameBootstrap extends cc.Component {
         );
         this.menuSongRowsRoot = new cc.Node("SongRows");
         this.menuSongRowsRoot.parent = this.menuSongPanel;
-        DEMO_SONGS.forEach((_song, songIndex) => {
+        SONG_CATALOG.forEach((_song, songIndex) => {
             this.menuSongRows.push(this.makeSongRow(
                 this.menuSongRowsRoot,
                 this.menuSongPanel,
@@ -625,7 +627,7 @@ export default class GameBootstrap extends cc.Component {
         this.trackLabel = this.makeLabel(
             this.gameRoot,
             "Track",
-            DEMO_SONGS[0].beatmap.title,
+            SONG_CATALOG[0].beatmap.title,
             16,
             cc.color(255, 207, 82)
         );
@@ -1047,9 +1049,8 @@ export default class GameBootstrap extends cc.Component {
 
     private layoutSongRows(cardWidth: number, cardHeight: number): void {
         const rowWidth = Math.max(170, cardWidth * 0.86);
-        const rowHeight = Math.max(34, Math.min(52, cardHeight * 0.205));
-        const rowGap = rowHeight + Math.max(2, cardHeight * 0.012);
-        const firstRowY = cardHeight * 0.205;
+        const vertical = calculateSongListVerticalLayout(cardHeight, this.menuSongRows.length);
+        const rowHeight = vertical.rowHeight;
         const previewScale = rowHeight / 66;
         const starSize = Math.max(14, Math.min(21, rowHeight * 0.41));
         const starScale = starSize / 128;
@@ -1057,7 +1058,7 @@ export default class GameBootstrap extends cc.Component {
 
         this.menuSongRowsRoot.setContentSize(cardWidth, cardHeight);
         this.menuSongRows.forEach((view, rowIndex) => {
-            const rowY = firstRowY - rowIndex * rowGap;
+            const rowY = vertical.rowCenters[rowIndex];
             view.node.setContentSize(rowWidth, rowHeight);
             view.node.setPosition(0, rowY);
             [view.idleBackground, view.selectedBackground].forEach((background) => {
@@ -1088,8 +1089,8 @@ export default class GameBootstrap extends cc.Component {
 
         this.menuSongStatusLabel.fontSize = Math.max(11, Math.min(13, cardHeight * 0.055));
         this.menuSongStatusLabel.lineHeight = Math.round(this.menuSongStatusLabel.fontSize * 1.15);
-        this.menuSongStatusLabel.node.setContentSize(Math.max(120, rowWidth), Math.max(22, cardHeight * 0.12));
-        this.menuSongStatusLabel.node.setPosition(0, -cardHeight * 0.285);
+        this.menuSongStatusLabel.node.setContentSize(Math.max(120, rowWidth), vertical.statusHeight);
+        this.menuSongStatusLabel.node.setPosition(0, vertical.statusY);
         this.enforceSongPanelLayerOrder();
         this.refreshSongRows();
     }
@@ -1292,11 +1293,11 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private selectedSong(): SongDefinition {
-        return DEMO_SONGS[this.selectedSongIndex] || DEMO_SONGS[0];
+        return SONG_CATALOG[this.selectedSongIndex] || SONG_CATALOG[0];
     }
 
     private selectSong(songIndex: number): void {
-        if (songIndex < 0 || songIndex >= DEMO_SONGS.length) {
+        if (songIndex < 0 || songIndex >= SONG_CATALOG.length) {
             return;
         }
         this.cancelPendingGameplayStart();
@@ -1317,13 +1318,13 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private toggleSongPreview(songIndex: number): void {
-        if (songIndex < 0 || songIndex >= DEMO_SONGS.length) {
+        if (songIndex < 0 || songIndex >= SONG_CATALOG.length) {
             return;
         }
         this.cancelPendingGameplayStart();
         this.selectedSongIndex = songIndex;
         const song = this.selectedSong();
-        const pending = this.songPreview.toggle(song.id, song.previewPath, song.previewVolume);
+        const pending = this.songPreview.toggle(song.id, song.audioPath, song.previewVolume);
         this.refreshSongRows();
         pending.then((snapshot) => {
             if (!cc.isValid(this.node)) {
@@ -1353,7 +1354,7 @@ export default class GameBootstrap extends cc.Component {
             return;
         }
         this.menuSongRows.forEach((view) => {
-            const song = DEMO_SONGS[view.songIndex];
+            const song = SONG_CATALOG[view.songIndex];
             const selected = view.songIndex === this.selectedSongIndex;
             view.idleBackground.node.active = !selected;
             view.selectedBackground.node.active = selected;
@@ -1361,13 +1362,14 @@ export default class GameBootstrap extends cc.Component {
             this.drawSongRowFallback(view, selected, !!activeBackground.spriteFrame);
 
             const difficulty = analyzeBeatmapDifficulty(song.beatmap);
-            const previewActive = snapshot.songId === song.id && snapshot.phase !== "idle";
+            const previewActive = snapshot.songId === song.id
+                && snapshot.loop === true
+                && snapshot.phase !== "idle";
             this.applyButtonFrame(
                 view.previewButton,
                 this.art.get(previewActive ? "songPreviewPause" : "songPreviewPlay")
             );
-            const displayTitle = song.beatmap.title.replace(/\s*\/\s*ORIGINAL DEMO$/i, "");
-            view.title.string = displayTitle + "\n"
+            view.title.string = song.beatmap.title + "\n"
                 + song.beatmap.bpm + "BPM·" + song.beatmap.groups.length + "组·"
                 + beatmapNoteCount(song.beatmap) + "音";
             view.title.node.color = selected ? cc.color(48, 31, 8) : cc.color(255, 239, 204);
@@ -1382,10 +1384,13 @@ export default class GameBootstrap extends cc.Component {
         if (!this.menuSongStatusLabel) {
             return;
         }
-        if (snapshot.phase === "starting") {
+        if (snapshot.phase === "starting" && snapshot.loop === false) {
+            this.menuSongStatusLabel.string = "正在载入关卡音乐…";
+            this.menuSongStatusLabel.node.color = cc.color(255, 224, 139);
+        } else if (snapshot.phase === "starting") {
             this.menuSongStatusLabel.string = "正在加载试听…";
             this.menuSongStatusLabel.node.color = cc.color(255, 224, 139);
-        } else if (snapshot.phase === "playing") {
+        } else if (snapshot.phase === "playing" && snapshot.loop === true) {
             this.menuSongStatusLabel.string = "正在试听 · 再点左侧按钮暂停";
             this.menuSongStatusLabel.node.color = cc.color(255, 224, 139);
         } else if (snapshot.phase === "stopping") {
@@ -1458,31 +1463,74 @@ export default class GameBootstrap extends cc.Component {
         if (this.gameplayStartPending) {
             return;
         }
-        const song = this.selectedSong();
+        this.requestGameplayStart(this.selectedSong(), true);
+    }
+
+    private requestGameplayStart(song: SongDefinition, enterGameplay: boolean): void {
         const requestId = ++this.gameplayStartRequestId;
         this.gameplayStartPending = true;
-        this.stopSongPreview().then((snapshot) => {
+        this.clock.stop();
+        if (this.input) {
+            this.input.resetPressed();
+        }
+        if (this.gameplayActive) {
+            this.instructionLabel.string = "正在从头载入关卡音乐…";
+        }
+        const pending = this.songPreview.play(
+            song.id,
+            song.audioPath,
+            false,
+            song.gameplayVolume
+        );
+        this.refreshSongRows();
+        pending.then((snapshot) => {
             if (!cc.isValid(this.node) || requestId !== this.gameplayStartRequestId) {
                 return;
             }
             this.gameplayStartPending = false;
             this.refreshSongRows(snapshot);
             if (!canEnterGameplay(this.startupState) || this.hostSuspended) {
+                this.restartAfterHostResume = this.hostSuspended && this.gameplayActive;
+                this.songPreview.stop();
                 this.refreshStartupStatus();
                 return;
             }
-            this.beginGameplay(song);
+            this.activateGameplayRun(song, enterGameplay);
         });
     }
 
-    private beginGameplay(song: SongDefinition): void {
+    private activateGameplayRun(song: SongDefinition, enterGameplay: boolean): void {
         this.activeSong = song;
-        this.hideInfo();
-        this.menuRoot.active = false;
-        this.gameRoot.active = true;
-        this.gameplayActive = true;
-        console.info("[GameBootstrap] screen=gameplay");
-        this.restartGame();
+        if (enterGameplay) {
+            this.hideInfo();
+            this.menuRoot.active = false;
+            this.gameRoot.active = true;
+            this.gameplayActive = true;
+            console.info("[GameBootstrap] screen=gameplay");
+        }
+        this.configureActiveSongSession();
+        this.engine.start();
+        this.completionRecordedForRun = false;
+        // The host play Promise has settled immediately before this boundary.
+        // A rejected/unavailable host still starts the monotonic fallback clock.
+        this.clock.restart();
+        if (this.dancerController) {
+            this.dancerController.setGameplayIdle(true);
+            this.dancerController.setAnimationProfile(this.activeSong.animation);
+        }
+        this.pausedByHost = false;
+        this.restartAfterHostResume = false;
+        this.heldGroupIndex = -1;
+        this.groupRenderKey = "";
+        this.setGroupInputUiVisible(true);
+        this.lastResultText = "等待第一键";
+        this.lastResultColor = cc.color(255, 207, 82);
+        this.showTransient("准备", cc.color(255, 207, 82), 800);
+        this.instructionLabel.string = "方向键 / WASD · 在箭头目标时刻输入";
+        this.refreshStats();
+        this.renderGroup(0);
+        this.updateNoteChips(0);
+        this.updateGlobalTimeline(0);
         this.layout();
     }
 
@@ -1492,14 +1540,12 @@ export default class GameBootstrap extends cc.Component {
         }
         this.cancelPendingGameplayStart();
         this.stopSongPreview();
-        if (this.clock.isStarted() && !this.clock.isPaused()) {
-            this.clock.pause();
-        }
+        this.clock.stop();
         if (this.input) {
             this.input.resetPressed();
         }
         this.danceFlow.reset();
-        this.clockHeldForDanceFlow = false;
+        this.restartAfterHostResume = false;
         this.heldGroupIndex = -1;
         this.gameplayActive = false;
         this.currentOutcome = null;
@@ -1606,33 +1652,13 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private restartGame(): void {
-        if (!canEnterGameplay(this.startupState) || !this.gameplayActive) {
+        if (!canEnterGameplay(this.startupState) || !this.gameplayActive
+            || this.gameplayStartPending || this.hostSuspended) {
             return;
         }
-        this.configureActiveSongSession();
-        this.engine.start();
-        this.completionRecordedForRun = false;
-        this.clock.restart();
-        if (this.dancerController) {
-            this.dancerController.setGameplayIdle(true);
-            this.dancerController.setAnimationProfile(this.activeSong.animation);
-        }
-        this.pausedByHost = false;
-        this.clockHeldForDanceFlow = false;
-        this.heldGroupIndex = -1;
-        this.groupRenderKey = "";
-        this.setGroupInputUiVisible(true);
-        this.lastResultText = "等待第一键";
-        this.lastResultColor = cc.color(255, 207, 82);
-        this.showTransient("准备", cc.color(255, 207, 82), 800);
-        this.instructionLabel.string = "方向键 / WASD · 在箭头目标时刻输入";
-        this.refreshStats();
-        this.renderGroup(0);
-        this.updateNoteChips(0);
-        this.updateGlobalTimeline(0);
-        if (this.hostSuspended) {
-            this.pauseForHost();
-        }
+        this.danceFlow.reset();
+        this.setGroupInputUiVisible(false);
+        this.requestGameplayStart(this.activeSong, false);
     }
 
     private configureActiveSongSession(): void {
@@ -1657,10 +1683,13 @@ export default class GameBootstrap extends cc.Component {
         }
         this.gameplayStartRequestId += 1;
         this.gameplayStartPending = false;
+        this.clock.stop();
+        this.songPreview.stop();
     }
 
     private onDirection(direction: Direction): void {
-        if (!this.gameplayActive || !canEnterGameplay(this.startupState)
+        if (!this.gameplayActive || this.gameplayStartPending
+            || !canEnterGameplay(this.startupState)
             || this.danceFlow.getSnapshot().inputLocked || this.clock.isPaused()) {
             return;
         }
@@ -1703,10 +1732,6 @@ export default class GameBootstrap extends cc.Component {
         const segment = this.danceFlow.beginGroupDance(completedGroupIndex);
         this.heldGroupIndex = completedGroupIndex;
         this.groupRenderKey = "";
-        if (this.clock.isStarted() && !this.clock.isPaused()) {
-            this.clock.pause();
-        }
-        this.clockHeldForDanceFlow = true;
         if (this.input) {
             this.input.resetPressed();
         }
@@ -1720,7 +1745,7 @@ export default class GameBootstrap extends cc.Component {
         }
         this.instructionLabel.string = this.danceInstruction(segment);
         this.progressLabel.string = "舞段 " + (segment.groupIndex + 1) + " / " + segment.groupCount
-            + " · 谱面与输入已暂停";
+            + " · 输入锁定，音乐与谱面时钟继续";
         this.progressLabel.node.color = cc.color(255, 207, 82);
         this.updateStage(segment.startMs);
     }
@@ -1755,7 +1780,6 @@ export default class GameBootstrap extends cc.Component {
             }
             this.heldGroupIndex = -1;
             this.groupRenderKey = "";
-            this.clockHeldForDanceFlow = false;
             this.instructionLabel.string = "方向键 / WASD · 在箭头目标时刻输入";
             this.progressLabel.node.color = cc.color(238, 220, 183);
             this.setGroupInputUiVisible(true);
@@ -1763,14 +1787,14 @@ export default class GameBootstrap extends cc.Component {
             this.updateNoteChips(songTimeMs);
             this.updateGlobalTimeline(songTimeMs);
             this.refreshStats();
-            if (!this.hostSuspended && this.clock.isPaused()) {
-                this.clock.resume();
-            }
             return;
         }
 
-        this.clockHeldForDanceFlow = true;
         this.setGroupInputUiVisible(false);
+        if (this.clock.isStarted() && !this.clock.isPaused()) {
+            this.clock.pause();
+        }
+        this.songPreview.stop();
         const snapshot = this.engine.getSnapshot();
         this.currentOutcome = resolveSongOutcome(this.activeSong, snapshot.score);
         this.recordCompletedRun();
@@ -2536,8 +2560,10 @@ export default class GameBootstrap extends cc.Component {
 
     private pauseForHost(): void {
         this.hostSuspended = true;
-        if (!this.gameplayActive) {
+        if (this.gameplayStartPending) {
+            this.restartAfterHostResume = this.gameplayActive;
             this.cancelPendingGameplayStart();
+        } else if (!this.gameplayActive) {
             this.stopSongPreview();
         }
         if (this.dancerController) {
@@ -2567,11 +2593,16 @@ export default class GameBootstrap extends cc.Component {
             this.input.resetPressed();
         }
         if (this.pausedByHost) {
-            if (this.gameplayActive && !this.clockHeldForDanceFlow
-                && this.danceFlow.getSnapshot().phase === "input") {
+            if (this.gameplayActive && this.danceFlow.getSnapshot().phase !== "result") {
                 this.clock.resume();
             }
             this.pausedByHost = false;
+        }
+        if (this.restartAfterHostResume && this.gameplayActive) {
+            this.restartAfterHostResume = false;
+            this.restartGame();
+            this.layout();
+            return;
         }
         this.restoreInstructionForPhase();
         this.layout();

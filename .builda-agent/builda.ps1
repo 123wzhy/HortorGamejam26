@@ -337,7 +337,7 @@ $RefreshPath = Join-Path $AuthDir "refresh-token"
 $Manifest = if ($env:BUILDA_MANIFEST) { $env:BUILDA_MANIFEST } else { "builda.publish.json" }
 $ProjectFile = if ($env:BUILDA_PROJECT_FILE) { $env:BUILDA_PROJECT_FILE } else { Join-Path $ProjectStateDir "game.json" }
 $LegacyProjectFile = if ($env:BUILDA_LEGACY_PROJECT_FILE) { $env:BUILDA_LEGACY_PROJECT_FILE } else { "builda.game.json" }
-$Version = "0.4.36"
+$Version = "0.4.37"
 $RuntimeVersionFile = Join-Path $Root "VERSION"
 $SdkVersionFile = Join-Path $ProjectStateDir "sdk-version"
 $DefaultBase = "https://builda-godot-api.poni.fun"
@@ -1186,7 +1186,7 @@ function Assert-ManifestRankBoards {
     throw "rankBoards must be an array; omit it to keep existing boards or use [] to clear all boards."
   }
   $Boards = @($Data.rankBoards)
-  if ($Boards.Count -gt 5) { throw "rankBoards supports at most 5 boards." }
+  if ($Boards.Count -gt 100) { throw "rankBoards supports at most 100 boards." }
   $Required = @("rankId", "displayName", "sortType", "cycleType", "minScore", "maxScore")
   $Seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
   for ($I = 0; $I -lt $Boards.Count; $I++) {

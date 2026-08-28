@@ -1,4 +1,4 @@
-import { Beatmap, DEMO_BEATMAP } from "../assets/scripts/domain/Beatmap";
+import { Beatmap, FENG_WU_JIU_TIAN_BEATMAP } from "../assets/scripts/domain/Beatmap";
 import { analyzeBeatmapDifficulty, MAX_DIFFICULTY_STARS } from "../assets/scripts/domain/BeatmapDifficulty";
 import {
     LOCAL_LEADERBOARD_KEY,
@@ -8,7 +8,7 @@ import {
 import {
     beatmapNoteCount,
     createSongSessionConfig,
-    DEMO_SONGS,
+    SONG_CATALOG,
     maximumSongScore,
     passingSongScore,
     resolveSongOutcome,
@@ -30,6 +30,7 @@ import {
     calculateMenuHintHorizontalLayout,
     calculateNoteChipVerticalLayout,
     calculateRhythmVerticalLayout,
+    calculateSongListVerticalLayout,
     MenuCardVerticalLayout,
     MenuFooterVerticalLayout,
     RhythmVerticalLayout,
@@ -93,6 +94,7 @@ function makeBeatmap(): Beatmap {
         id: "test",
         title: "Test",
         bpm: 100,
+        beatOffsetMs: 0,
         groups: [
             {
                 id: "one",
@@ -120,6 +122,7 @@ function makeOneGroupBeatmap(): Beatmap {
         id: "one-group",
         title: beatmap.title,
         bpm: beatmap.bpm,
+        beatOffsetMs: beatmap.beatOffsetMs,
         groups: [beatmap.groups[0]]
     };
 }
@@ -141,9 +144,11 @@ function testJudgeBoundaries(): void {
     equal(judge.judge(181).baseScore, 0, "Miss score is zero");
 }
 
-function testDemoGridAndGroups(): void {
-    equal(DEMO_SONGS[0].beatmap === DEMO_SONGS[1].beatmap, false, "Songs own independent beatmaps");
-    DEMO_SONGS.forEach((song) => {
+function testSongGridAndGroups(): void {
+    equal(SONG_CATALOG.length, 3, "Catalog exposes exactly three playable song levels");
+    equal(new Set(SONG_CATALOG.map((song) => song.beatmap)).size, 3, "Songs own independent beatmaps");
+    const allNoteIds: string[] = [];
+    SONG_CATALOG.forEach((song) => {
         const beatmap = song.beatmap;
         const beatDurationMs = 60000 / beatmap.bpm;
         const noteIds: string[] = [];
@@ -156,80 +161,114 @@ function testDemoGridAndGroups(): void {
                 group.id + " has three to five notes"
             );
             group.notes.forEach((note, noteIndex) => {
-                equal(note.targetTimeMs % beatDurationMs, 0, note.id + " lands on the BPM grid");
+                const halfBeatPosition = (note.targetTimeMs - beatmap.beatOffsetMs)
+                    / beatDurationMs * 2;
+                near(
+                    halfBeatPosition,
+                    Math.round(halfBeatPosition),
+                    0.000001,
+                    note.id + " lands on the analyzed offset/BPM half-beat grid"
+                );
                 equal(note.targetTimeMs > previousTarget, true, note.id + " is strictly time ordered");
                 if (noteIndex > 0) {
+                    const intervalBeats = (note.targetTimeMs
+                        - group.notes[noteIndex - 1].targetTimeMs) / beatDurationMs;
+                    near(
+                        intervalBeats * 2,
+                        Math.round(intervalBeats * 2),
+                        0.000001,
+                        note.id + " advances by an authored half or full beat"
+                    );
                     equal(
-                        note.targetTimeMs - group.notes[noteIndex - 1].targetTimeMs,
-                        beatDurationMs,
-                        note.id + " advances exactly one beat within its group"
+                        intervalBeats >= 0.499999 && intervalBeats <= 1.000001,
+                        true,
+                        note.id + " interval stays playable"
                     );
                 }
                 previousTarget = note.targetTimeMs;
                 noteIds.push(note.id);
+                allNoteIds.push(note.id);
             });
             if (groupIndex > 0) {
                 const previous = beatmap.groups[groupIndex - 1];
                 const gap = group.notes[0].targetTimeMs
                     - previous.notes[previous.notes.length - 1].targetTimeMs;
-                equal(gap, beatDurationMs * 2, group.id + " leaves exactly one empty beat");
+                const danceSegmentMs = song.animation.danceDurationMs / beatmap.groups.length;
+                equal(
+                    gap >= danceSegmentMs + DEFAULT_JUDGE_WINDOWS.badMs * 2,
+                    true,
+                    group.id + " preserves the dance segment and both Bad-window margins"
+                );
             }
         });
-        equal(noteIds.length, 31, song.id + " has exactly 31 notes");
+        const firstNote = beatmap.groups[0].notes[0];
+        equal(
+            firstNote.targetTimeMs >= 7000 && firstNote.targetTimeMs <= 8000,
+            true,
+            song.id + " begins its playable chart around 7–8 seconds"
+        );
         equal(new Set(noteIds).size, noteIds.length, song.id + " note ids are unique");
     });
+    equal(new Set(allNoteIds).size, allNoteIds.length, "Note ids are unique across the whole catalog");
 }
 
 function testSongCatalogAndGeneratedDifficulty(): void {
-    equal(DEMO_SONGS.length, 2, "Song menu is driven by exactly two Phase A definitions");
+    equal(SONG_CATALOG.length, 3, "Song menu is driven by exactly three real tracks");
     equal(
-        DEMO_SONGS.map((song) => song.id).join(","),
-        "neon-grid-demo,golden-stampede-demo",
+        SONG_CATALOG.map((song) => song.id).join(","),
+        "feng-wu-jiu-tian,zhu-zhu-xia,are-you-ok",
         "Song definitions retain their stable ids"
     );
     equal(
-        DEMO_SONGS.map((song) => song.beatmap.title).join(","),
-        "NEON GRID / ORIGINAL DEMO,GOLDEN STAMPEDE / ORIGINAL DEMO",
+        SONG_CATALOG.map((song) => song.beatmap.title).join(","),
+        "凤舞九天,猪猪侠,Are You OK",
         "Song definitions retain their stable titles"
     );
     equal(
-        DEMO_SONGS.map((song) => song.previewPath).join(","),
-        "audio/bgm/neon-grid-demo-preview.wav,audio/bgm/golden-stampede-demo-preview.wav",
+        SONG_CATALOG.map((song) => song.artist).join(","),
+        "凤舞九天,陈洁丽,雷军",
+        "Catalog records the source artists"
+    );
+    equal(
+        SONG_CATALOG.map((song) => song.audioPath).join(","),
+        "audio/bgm/feng-wu-jiu-tian.mp3,audio/bgm/zhu-zhu-xia.mp3,audio/bgm/are-you-ok.mp3",
         "Each song maps to one Builda audio asset"
     );
     equal(
-        DEMO_SONGS.every((song) => song.previewVolume > 0 && song.previewVolume <= 1),
+        SONG_CATALOG.every((song) => song.previewVolume > 0 && song.previewVolume <= 1
+            && song.gameplayVolume > 0 && song.gameplayVolume <= 1),
         true,
-        "Preview volumes stay within the SDK contract"
+        "Preview and gameplay volumes stay within the SDK contract"
     );
     equal(
-        DEMO_SONGS.map((song) => beatmapNoteCount(song.beatmap)).join(","),
-        "31,31",
+        SONG_CATALOG.map((song) => beatmapNoteCount(song.beatmap)).join(","),
+        "32,40,27",
         "Song rows expose generated note counts instead of design-sample text"
     );
     equal(
-        DEMO_SONGS.map((song) => song.animation.danceClip).join(","),
-        "DanceCombo,DanceCombo2",
-        "Each song maps to its own dance clip"
+        SONG_CATALOG.map((song) => song.animation.danceClip).join(","),
+        "DanceCombo,DanceCombo2,DanceCombo",
+        "Every song maps to an available dance clip"
     );
     equal(
-        DEMO_SONGS.map((song) => song.animation.successResultClip).join(","),
-        "ResultPose,ResultPose2",
-        "Each song maps to its own success clip"
+        SONG_CATALOG.map((song) => song.animation.successResultClip).join(","),
+        "ResultPose,ResultPose2,ResultPose",
+        "Every song maps to the success clip paired with its dance"
     );
     equal(
-        DEMO_SONGS.map((song) => song.animation.failureResultClip).join(","),
-        "ResultPose3,ResultPose3",
-        "Both songs share the failure clip"
+        SONG_CATALOG.map((song) => song.animation.failureResultClip).join(","),
+        "ResultPose3,ResultPose3,ResultPose3",
+        "All songs share the failure clip"
     );
 
-    const analyses = DEMO_SONGS.map((song) => analyzeBeatmapDifficulty(song.beatmap));
+    const analyses = SONG_CATALOG.map((song) => analyzeBeatmapDifficulty(song.beatmap));
     equal(
         analyses.map((analysis) => analysis.stars).join(","),
-        "2,3",
-        "Difficulty analysis separates the 100 BPM and 120 BPM generated charts"
+        "2,3,1",
+        "Difficulty stars come from the three authored chart densities"
     );
-    equal(analyses[1].score > analyses[0].score, true, "The denser faster chart has the higher measured score");
+    equal(analyses[1].score > analyses[0].score, true, "The half-beat chart has the highest measured pressure");
+    equal(analyses[0].score > analyses[2].score, true, "The mixed chart outranks the spacious chart");
     equal(
         analyses.every((analysis) => analysis.stars >= 1 && analysis.stars <= MAX_DIFFICULTY_STARS),
         true,
@@ -240,6 +279,7 @@ function testSongCatalogAndGeneratedDifficulty(): void {
         id: "empty",
         title: "Empty",
         bpm: 0,
+        beatOffsetMs: 0,
         groups: []
     });
     equal(emptyAnalysis.stars, 1, "An empty or not-yet-generated chart safely displays one star");
@@ -247,41 +287,49 @@ function testSongCatalogAndGeneratedDifficulty(): void {
 }
 
 function testSongSessionConfigurations(): void {
-    const sessions = DEMO_SONGS.map((song) => {
+    const sessions = SONG_CATALOG.map((song) => {
         return createSongSessionConfig(song, DEFAULT_JUDGE_WINDOWS.badMs);
     });
     equal(
         sessions.map((session) => session.songId).join(","),
-        "neon-grid-demo,golden-stampede-demo",
+        "feng-wu-jiu-tian,zhu-zhu-xia,are-you-ok",
         "Session selection keeps the chosen song id"
     );
     equal(
         sessions.map((session) => session.title).join(","),
-        "NEON GRID / ORIGINAL DEMO,GOLDEN STAMPEDE / ORIGINAL DEMO",
+        "凤舞九天,猪猪侠,Are You OK",
         "Track UI receives the selected title from the session"
-    );
-    equal(
-        sessions.map((session) => session.songDurationMs).join(","),
-        "24780,20680",
-        "Each timeline ends at its own final note plus the Bad window"
     );
     near(sessions[0].danceDurationMs, 26791.66603088379, 0.000001, "First session uses DanceCombo length");
     near(sessions[1].danceDurationMs, 20458.33396911621, 0.000001, "Second session uses DanceCombo2 length");
-    sessions.forEach((session) => {
+    near(sessions[2].danceDurationMs, 26791.66603088379, 0.000001, "Third session reuses DanceCombo length");
+    sessions.forEach((session, index) => {
         equal(session.groupCount, 8, session.songId + " config drives eight groups");
-        equal(session.noteCount, 31, session.songId + " config drives 31 notes");
+        equal(session.noteCount, beatmapNoteCount(SONG_CATALOG[index].beatmap), session.songId + " uses its chart count");
+        equal(
+            session.songDurationMs >= 50000 && session.songDurationMs <= 60000,
+            true,
+            session.songId + " input timeline completes around 50–60 seconds"
+        );
+        equal(
+            session.estimatedCompletionMs >= 50000 && session.estimatedCompletionMs <= 60000,
+            true,
+            session.songId + " final dance also completes around 50–60 seconds"
+        );
+        equal(session.estimatedCompletionMs < session.audioDurationMs, true, session.songId + " audio outlasts play");
         const engine = new SequenceEngine(session.beatmap, new JudgeSystem());
         engine.start();
         equal(engine.getSnapshot().groupCount, session.groupCount, session.songId + " engine uses selected groups");
         equal(engine.getSnapshot().totalNoteCount, session.noteCount, session.songId + " engine uses selected notes");
     });
     equal(wrappedSongIndex(0, 1), 1, "Next wraps from the first song to the second");
-    equal(wrappedSongIndex(1, 1), 0, "Next wraps from the second song to the first");
-    equal(wrappedSongIndex(0, -1), 1, "Previous wraps from the first song to the second");
+    equal(wrappedSongIndex(1, 1), 2, "Next advances from the second song to the third");
+    equal(wrappedSongIndex(2, 1), 0, "Next wraps from the third song to the first");
+    equal(wrappedSongIndex(0, -1), 2, "Previous wraps from the first song to the third");
 }
 
 function testEverySongDanceFlowCoverage(): void {
-    DEMO_SONGS.forEach((song) => {
+    SONG_CATALOG.forEach((song) => {
         const session = createSongSessionConfig(song, DEFAULT_JUDGE_WINDOWS.badMs);
         const flow = new GroupDanceFlow(session.groupCount, session.danceDurationMs);
         let previousEndMs = 0;
@@ -315,19 +363,21 @@ function testEverySongDanceFlowCoverage(): void {
 }
 
 function testSongOutcomeBoundaries(): void {
-    const expectedSuccessClips = ["ResultPose", "ResultPose2"];
-    DEMO_SONGS.forEach((song, index) => {
-        equal(maximumSongScore(song), 31000, song.id + " maximum follows 31 Perfect notes");
-        equal(passingSongScore(song), 18600, song.id + " uses the rounded-up 60% passing line");
-        const below = resolveSongOutcome(song, 18599);
-        const boundary = resolveSongOutcome(song, 18600);
-        const perfect = resolveSongOutcome(song, 31000);
+    const expectedSuccessClips = ["ResultPose", "ResultPose2", "ResultPose"];
+    SONG_CATALOG.forEach((song, index) => {
+        const maximum = beatmapNoteCount(song.beatmap) * 1000;
+        const passing = Math.ceil(maximum * 0.6);
+        equal(maximumSongScore(song), maximum, song.id + " maximum follows its Perfect note count");
+        equal(passingSongScore(song), passing, song.id + " uses the rounded-up 60% passing line");
+        const below = resolveSongOutcome(song, passing - 1);
+        const boundary = resolveSongOutcome(song, passing);
+        const perfect = resolveSongOutcome(song, maximum);
         equal(below.passed, false, song.id + " fails one point below the line");
         equal(below.resultClip, "ResultPose3", song.id + " failure uses the shared pose");
         equal(boundary.passed, true, song.id + " passes exactly on the line");
         equal(boundary.resultClip, expectedSuccessClips[index], song.id + " uses its success pose");
         equal(perfect.passed, true, song.id + " perfect score passes");
-        equal(perfect.score, 31000, song.id + " perfect result keeps the actual score");
+        equal(perfect.score, maximum, song.id + " perfect result keeps the actual score");
     });
 }
 
@@ -348,48 +398,104 @@ class RecordingPreviewAudio implements SongPreviewAudioPort {
     }
 }
 
+class DeferredPreviewAudio implements SongPreviewAudioPort {
+    public readonly plays: Array<{ path: string; loop: boolean; volume: number }> = [];
+    public stopCount: number = 0;
+    private resolvePendingPlay: ((played: boolean) => void) | null = null;
+
+    public playBGM(path: string, loop: boolean = true, volume: number = 1): Promise<boolean> {
+        this.plays.push({ path, loop, volume });
+        return new Promise<boolean>((resolve) => {
+            this.resolvePendingPlay = resolve;
+        });
+    }
+
+    public stopBGM(): Promise<boolean> {
+        this.stopCount += 1;
+        return Promise.resolve(true);
+    }
+
+    public settlePlay(played: boolean): void {
+        if (!this.resolvePendingPlay) {
+            throw new Error("Expected one in-flight host play call");
+        }
+        const resolve = this.resolvePendingPlay;
+        this.resolvePendingPlay = null;
+        resolve(played);
+    }
+}
+
 async function testSongPreviewControllerSerialization(): Promise<void> {
     const audio = new RecordingPreviewAudio();
     const controller = new SongPreviewController(audio);
-    const firstSong = DEMO_SONGS[0];
-    const secondSong = DEMO_SONGS[1];
+    const firstSong = SONG_CATALOG[0];
+    const secondSong = SONG_CATALOG[1];
 
-    const firstStart = controller.toggle(firstSong.id, firstSong.previewPath, 3);
+    const firstStart = controller.toggle(firstSong.id, firstSong.audioPath, 3);
     equal(controller.getSnapshot().phase, "starting", "A play tap immediately exposes loading state");
     const firstPlaying = await firstStart;
     equal(firstPlaying.phase, "playing", "A successful host call exposes playing state");
-    equal(audio.plays[0].path, firstSong.previewPath, "The controller forwards the catalog path");
+    equal(audio.plays[0].path, firstSong.audioPath, "The controller forwards the catalog path");
     equal(audio.plays[0].loop, true, "Song previews loop through the host BGM channel");
     equal(audio.plays[0].volume, 1, "Out-of-range preview volume is clamped before SDK use");
 
-    const firstStop = controller.toggle(firstSong.id, firstSong.previewPath, firstSong.previewVolume);
+    const firstStop = controller.toggle(firstSong.id, firstSong.audioPath, firstSong.previewVolume);
     equal(controller.getSnapshot().phase, "stopping", "A second tap immediately exposes pause state");
     equal((await firstStop).phase, "idle", "A second tap stops the active preview");
 
+    const gameplay = await controller.play(
+        firstSong.id,
+        firstSong.audioPath,
+        false,
+        firstSong.gameplayVolume
+    );
+    equal(gameplay.phase, "playing", "Gameplay owns the same serialized BGM channel");
+    equal(gameplay.loop, false, "Gameplay snapshot records non-looping playback");
+    equal(audio.plays[audio.plays.length - 1].loop, false, "Gameplay BGM is explicitly non-looping");
+    await controller.stop();
+
     const switchedAudio = new RecordingPreviewAudio();
     const switched = new SongPreviewController(switchedAudio);
-    const staleStart = switched.toggle(firstSong.id, firstSong.previewPath, firstSong.previewVolume);
-    const latestStart = switched.toggle(secondSong.id, secondSong.previewPath, secondSong.previewVolume);
+    const staleStart = switched.toggle(firstSong.id, firstSong.audioPath, firstSong.previewVolume);
+    const latestStart = switched.toggle(secondSong.id, secondSong.audioPath, secondSong.previewVolume);
     await Promise.all([staleStart, latestStart]);
     equal(switchedAudio.plays.length, 1, "A rapid song switch never starts the stale queued preview");
-    equal(switchedAudio.plays[0].path, secondSong.previewPath, "A rapid switch starts only the latest selection");
+    equal(switchedAudio.plays[0].path, secondSong.audioPath, "A rapid switch starts only the latest selection");
     equal(switched.getSnapshot().songId, secondSong.id, "The latest song owns the playing snapshot");
     equal(switched.getSnapshot().phase, "playing", "The latest song reaches playing state");
 
     const cancelledAudio = new RecordingPreviewAudio();
     const cancelled = new SongPreviewController(cancelledAudio);
-    const pendingStart = cancelled.toggle(firstSong.id, firstSong.previewPath, firstSong.previewVolume);
+    const pendingStart = cancelled.play(firstSong.id, firstSong.audioPath, false, firstSong.gameplayVolume);
     const pendingStop = cancelled.stop();
     await Promise.all([pendingStart, pendingStop]);
-    equal(cancelledAudio.plays.length, 0, "Play then pause before host startup cannot leak stale audio");
+    equal(cancelledAudio.plays.length, 0, "Gameplay start then cancel cannot leak stale audio");
     equal(cancelled.getSnapshot().phase, "idle", "A cancelled startup settles to idle");
+
+    const inFlightAudio = new DeferredPreviewAudio();
+    const inFlight = new SongPreviewController(inFlightAudio);
+    const inFlightStart = inFlight.play(
+        firstSong.id,
+        firstSong.audioPath,
+        false,
+        firstSong.gameplayVolume
+    );
+    for (let turn = 0; turn < 8 && inFlightAudio.plays.length === 0; turn += 1) {
+        await Promise.resolve();
+    }
+    equal(inFlightAudio.plays.length, 1, "Fixture reaches an in-flight asynchronous host play");
+    const inFlightStop = inFlight.stop();
+    inFlightAudio.settlePlay(true);
+    await Promise.all([inFlightStart, inFlightStop]);
+    equal(inFlight.getSnapshot().phase, "idle", "Cancelling an in-flight start returns to idle");
+    equal(inFlightAudio.stopCount, 3, "A late successful play is stopped before the cancel boundary settles");
 
     const unavailableAudio = new RecordingPreviewAudio();
     unavailableAudio.playResult = false;
     const unavailable = new SongPreviewController(unavailableAudio);
     const unavailableSnapshot = await unavailable.toggle(
         firstSong.id,
-        firstSong.previewPath,
+        firstSong.audioPath,
         firstSong.previewVolume
     );
     equal(unavailableSnapshot.phase, "idle", "A rejected host audio call returns to idle");
@@ -397,7 +503,7 @@ async function testSongPreviewControllerSerialization(): Promise<void> {
 
     const rejectedStopAudio = new RecordingPreviewAudio();
     const rejectedStop = new SongPreviewController(rejectedStopAudio);
-    await rejectedStop.toggle(firstSong.id, firstSong.previewPath, firstSong.previewVolume);
+    await rejectedStop.toggle(firstSong.id, firstSong.audioPath, firstSong.previewVolume);
     rejectedStopAudio.stopResult = false;
     const rejectedStopSnapshot = await rejectedStop.stop();
     equal(rejectedStopSnapshot.phase, "idle", "A rejected stop cannot leave a stale Pause state");
@@ -494,16 +600,16 @@ function testCatchUpStopsAtGroupBoundary(): void {
 }
 
 function testGroupDanceFlowSegments(): void {
-    const flow = new GroupDanceFlow(DEMO_BEATMAP.groups.length);
-    const segmentDurationMs = DANCE_COMBO_DURATION_MS / DEMO_BEATMAP.groups.length;
+    const flow = new GroupDanceFlow(FENG_WU_JIU_TIAN_BEATMAP.groups.length);
+    const segmentDurationMs = DANCE_COMBO_DURATION_MS / FENG_WU_JIU_TIAN_BEATMAP.groups.length;
     let previousEndMs = 0;
 
-    for (let groupIndex = 0; groupIndex < DEMO_BEATMAP.groups.length; groupIndex += 1) {
+    for (let groupIndex = 0; groupIndex < FENG_WU_JIU_TIAN_BEATMAP.groups.length; groupIndex += 1) {
         const segment = flow.beginGroupDance(groupIndex);
         near(segment.startMs, previousEndMs, 0.000001, "Dance slices are continuous at group " + groupIndex);
         near(
             segment.endMs,
-            DANCE_COMBO_DURATION_MS * (groupIndex + 1) / DEMO_BEATMAP.groups.length,
+            DANCE_COMBO_DURATION_MS * (groupIndex + 1) / FENG_WU_JIU_TIAN_BEATMAP.groups.length,
             0.000001,
             "Dance slice uses its matching eighth"
         );
@@ -515,7 +621,7 @@ function testGroupDanceFlowSegments(): void {
         if (!transition) {
             throw new Error("Expected a dance transition at the exact segment boundary");
         }
-        if (groupIndex < DEMO_BEATMAP.groups.length - 1) {
+        if (groupIndex < FENG_WU_JIU_TIAN_BEATMAP.groups.length - 1) {
             equal(transition.kind, "next-group", "A non-final dance returns to input");
             equal(flow.getSnapshot().phase, "input", "Non-final boundary reveals the next input phase");
             equal(flow.getSnapshot().inputLocked, false, "Non-final boundary unlocks input");
@@ -543,35 +649,44 @@ function testGroupDanceFlowSegments(): void {
     equal(flow.update(first.durationMs), null, "A cancelled slice cannot fire a stale transition");
 }
 
-function testDanceFlowFreezesSongClockAndFutureNotes(): void {
+function testDanceFlowKeepsContinuousSongClock(): void {
     let now = 0;
     const clock = new SongClock(() => now);
-    const engine = new SequenceEngine(makeBeatmap(), new JudgeSystem());
-    const flow = new GroupDanceFlow(2);
+    const beatmap = FENG_WU_JIU_TIAN_BEATMAP;
+    const engine = new SequenceEngine(beatmap, new JudgeSystem());
+    const flow = new GroupDanceFlow(beatmap.groups.length, DANCE_COMBO_DURATION_MS);
     clock.start();
     engine.start();
 
-    now = 1000;
-    engine.inputDirection("left", clock.currentTimeMs());
-    now = 1600;
-    engine.inputDirection("up", clock.currentTimeMs());
-    now = 2200;
-    const completed = lastAction(engine.inputDirection("right", clock.currentTimeMs()));
+    const firstGroupNotes = beatmap.groups[0].notes;
+    now = firstGroupNotes[0].targetTimeMs;
+    let completed = lastAction(engine.inputDirection(firstGroupNotes[0].direction, clock.currentTimeMs()));
+    for (let noteIndex = 1; noteIndex < firstGroupNotes.length; noteIndex += 1) {
+        const note = firstGroupNotes[noteIndex];
+        now = note.targetTimeMs;
+        completed = lastAction(engine.inputDirection(note.direction, clock.currentTimeMs()));
+    }
     equal(completed.groupCompleted, true, "Fixture completes its first input group");
-    const frozenSongTimeMs = clock.currentTimeMs();
-    clock.pause();
     const segment = flow.beginGroupDance(completed.groupIndex);
 
     now += segment.durationMs;
     const transition = flow.update(segment.durationMs);
-    equal(transition && transition.kind, "next-group", "Dance timer advances while song time is paused");
-    equal(clock.currentTimeMs(), frozenSongTimeMs, "Dance wall time is excluded from SongClock");
-    equal(engine.update(clock.currentTimeMs()).length, 0, "Frozen song time cannot auto-Miss a future note");
+    equal(transition && transition.kind, "next-group", "Dance timer advances to the next group");
+    near(clock.currentTimeMs(), now, 0.000001, "Dance wall time remains on the continuous song clock");
+    equal(engine.update(clock.currentTimeMs()).length, 0, "Authored dance gap cannot auto-Miss a future note");
     equal(engine.getSnapshot().noteIndex, 0, "The next group's first note remains pending after dance");
-
-    clock.resume();
-    now += 100;
-    equal(clock.currentTimeMs(), frozenSongTimeMs + 100, "SongClock resumes from the exact pre-dance point");
+    const nextNote = beatmap.groups[1].notes[0];
+    equal(
+        clock.currentTimeMs() <= nextNote.targetTimeMs - DEFAULT_JUDGE_WINDOWS.badMs,
+        true,
+        "Dance ends before the next note's complete Bad window"
+    );
+    now = nextNote.targetTimeMs;
+    equal(
+        lastAction(engine.inputDirection(nextNote.direction, clock.currentTimeMs())).judgement!.grade,
+        "Perfect",
+        "The next group remains synchronized to the uninterrupted song"
+    );
 }
 
 function testLocalLeaderboardOrdering(): void {
@@ -1136,6 +1251,26 @@ function testMenuCardVisibilityLayout(): void {
     );
 }
 
+function testThreeSongRowLayout(): void {
+    [184, 252].forEach((cardHeight) => {
+        const layout = calculateSongListVerticalLayout(cardHeight, 3);
+        equal(layout.rowCenters.length, 3, cardHeight + "px card allocates exactly three rows");
+        equal(layout.rowHeight >= 30, true, cardHeight + "px card keeps rows clickable");
+        for (let index = 1; index < layout.rowCenters.length; index += 1) {
+            const previousBottom = layout.rowCenters[index - 1] - layout.rowHeight * 0.5;
+            const nextTop = layout.rowCenters[index] + layout.rowHeight * 0.5;
+            equal(previousBottom > nextTop, true, cardHeight + "px rows stay separated");
+        }
+        const lastRowBottom = layout.rowCenters[2] - layout.rowHeight * 0.5;
+        equal(
+            lastRowBottom >= layout.statusTop + 5.999,
+            true,
+            cardHeight + "px third row does not overlap preview status text"
+        );
+        equal(layout.statusBottom >= -cardHeight * 0.5, true, "Status remains inside the card");
+    });
+}
+
 function testSongClockCalibrationAndPause(): void {
     let now = 100;
     const clock = new SongClock(() => now);
@@ -1152,6 +1287,10 @@ function testSongClockCalibrationAndPause(): void {
     equal(clock.currentTimeMs(), 420, "Resume continues from paused song position");
     clock.restart();
     equal(clock.currentTimeMs(), 20, "Restart preserves calibration");
+    clock.stop();
+    equal(clock.isStarted(), false, "Stop clears a completed or cancelled song session");
+    equal(clock.isPaused(), true, "Stopped clock cannot advance behind the menu");
+    equal(clock.currentTimeMs(), 20, "Stopped fallback clock preserves only calibration");
 }
 
 async function testBuildaAudioResultMapping(): Promise<void> {
@@ -1178,7 +1317,7 @@ async function testBuildaAudioResultMapping(): Promise<void> {
             }
         };
         const hostedAdapter = new BuildaAdapter();
-        equal(await hostedAdapter.playBGM("audio/bgm/demo.ogg"), false, "Rejected SDK Result maps to false");
+        equal(await hostedAdapter.playBGM("audio/bgm/fixture.ogg"), false, "Rejected SDK Result maps to false");
         equal(await hostedAdapter.stopBGM(), true, "Successful SDK Result maps to true");
         equal(await hostedAdapter.playSFX("audio/sfx/hit.ogg", "combo-hit", 0.5), true, "SFX Result maps to true");
         equal(capturedSfxOptions.sessionId, "combo-hit", "SFX session id uses SDK contract key");
@@ -1317,7 +1456,7 @@ function testUiStartupRaceAndFallback(): void {
 
 async function run(): Promise<void> {
     testJudgeBoundaries();
-    testDemoGridAndGroups();
+    testSongGridAndGroups();
     testSongCatalogAndGeneratedDifficulty();
     testSongSessionConfigurations();
     testEverySongDanceFlowCoverage();
@@ -1328,7 +1467,7 @@ async function run(): Promise<void> {
     testLateBoundaryAndAutomaticFailure();
     testCatchUpStopsAtGroupBoundary();
     testGroupDanceFlowSegments();
-    testDanceFlowFreezesSongClockAndFutureNotes();
+    testDanceFlowKeepsContinuousSongClock();
     testLocalLeaderboardOrdering();
     testLocalLeaderboardTopTenTruncation();
     testLocalLeaderboardPersistenceAndReload();
@@ -1345,12 +1484,13 @@ async function run(): Promise<void> {
     testMenuHintHorizontalLayout();
     testLandscapeOrientationGuard();
     testMenuCardVisibilityLayout();
+    testThreeSongRowLayout();
     testSongClockCalibrationAndPause();
     testUiStartupRaceAndFallback();
     await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
     await testSongPreviewControllerSerialization();
-    console.log("logic-tests=passed cases=34");
+    console.log("logic-tests=passed cases=35");
 }
 
 run().catch((error) => {
