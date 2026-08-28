@@ -263,7 +263,7 @@ export default class GameBootstrap extends cc.Component {
 
     private applyLoadedArt(): void {
         this.backgroundSprite.spriteFrame = this.art.get("BackGround");
-        this.applySpriteFrame(this.menuLogo, this.art.get("menuLogo"));
+        this.applySpriteFrame(this.menuLogo, this.art.get("logo"));
         this.applySpriteFrame(this.gameLogo, this.art.get("logo"));
         this.applyButtonFrame(this.menuStartButton, this.art.get("startBtn"));
         ["settingBtn", "rankBtn", "helpBtn"].forEach((name, index) => {
@@ -380,10 +380,10 @@ export default class GameBootstrap extends cc.Component {
         this.menuLogo = this.makeSpriteNode(
             this.menuRoot,
             "MenuLogo",
-            this.art.get("menuLogo"),
+            this.art.get("logo"),
             420,
-            280,
-            "牛来"
+            420 * 214 / 320,
+            "劲舞牛"
         );
         this.gameLogo = this.makeSpriteNode(this.gameRoot, "GameLogo", this.art.get("logo"), 320, 214, "牛来");
         this.menuTopButtons = [
