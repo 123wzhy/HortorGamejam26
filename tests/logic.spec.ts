@@ -265,8 +265,8 @@ function testSongSessionConfigurations(): void {
         "24780,20680",
         "Each timeline ends at its own final note plus the Bad window"
     );
-    near(sessions[0].danceDurationMs, 26800.00114440918, 0.000001, "First session uses DanceCombo length");
-    near(sessions[1].danceDurationMs, 20466.66717529297, 0.000001, "Second session uses DanceCombo2 length");
+    near(sessions[0].danceDurationMs, 26791.66603088379, 0.000001, "First session uses DanceCombo length");
+    near(sessions[1].danceDurationMs, 20458.33396911621, 0.000001, "Second session uses DanceCombo2 length");
     sessions.forEach((session) => {
         equal(session.groupCount, 8, session.songId + " config drives eight groups");
         equal(session.noteCount, 31, session.songId + " config drives 31 notes");

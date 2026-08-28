@@ -8,7 +8,7 @@ const HUD_GROUP_NAME = "hud";
 const PREFAB_NAME = "BullDancer";
 const MODEL_SCALE = 216;
 const MODEL_Y_OFFSET = -311;
-const JOINT_MATRIX_FLOAT_COUNT = 54 * 16;
+const JOINT_MATRIX_FLOAT_COUNT = 33 * 16;
 
 const REQUIRED_CLIPS: DancerClipName[] = [
     "IdleSway",
@@ -27,7 +27,7 @@ const DEFAULT_ANIMATION_PROFILE: SongAnimationProfile = {
     danceClip: "DanceCombo",
     successResultClip: "ResultPose",
     failureResultClip: "ResultPose3",
-    danceDurationMs: 26800.00114440918
+    danceDurationMs: 26791.66603088379
 };
 
 /**
@@ -140,7 +140,7 @@ export class DancerAnimationController {
         }
     }
 
-    /** Uses the original loop on menus; this is also the legacy idle default. */
+    /** Uses the stable menu clip name; the asset aliases it to the IdleSway0 source loop. */
     public setMenuIdle(restart: boolean = false): void {
         this.setIdleClip("IdleSway", restart);
     }

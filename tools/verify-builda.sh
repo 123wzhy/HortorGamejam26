@@ -112,7 +112,7 @@ if [ "$DANCER_BYTES" -gt "$DANCER_BUDGET" ]; then
   exit 1
 fi
 if find "$WEB_DIR/assets" -type f -exec shasum -a 256 {} + \
-  | grep -q '^0ae9d0faba3c3df5a0333880cf82f2a96d7669d082de5a8c38663963d773d7de '; then
+  | grep -q '^66838470bd81b538f55b434119d319f0eb41b3e717fce21ce72242e1c7a9a8b2 '; then
   echo "error: dancer import-only source buffer must not enter any built bundle" >&2
   exit 1
 fi

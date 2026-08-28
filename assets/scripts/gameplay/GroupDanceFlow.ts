@@ -1,4 +1,4 @@
-export const DANCE_COMBO_DURATION_MS = 26800.00114440918;
+export const DANCE_COMBO_DURATION_MS = 26791.66603088379;
 
 export type GroupDancePhase = "input" | "dance" | "result";
 

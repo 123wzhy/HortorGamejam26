@@ -2,6 +2,16 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+    DANCER_CLIP_SOURCES,
+    DANCER_SOURCE_NAMES,
+    EXPECTED_DANCER_FBX_SHA256,
+    ORIGINAL_DANCER_MODEL_FACTS,
+    ORIGINAL_DANCER_TEXTURE_FACTS,
+    assertExpectedSourceHashes,
+    assertIdleAliasPolicy,
+    assertOriginalModelFacts
+} from "./dancer-source-policy.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(SCRIPT_DIR, "..");
@@ -10,91 +20,85 @@ const IMPORT_DIR = path.join(PROJECT_ROOT, "assets", "spine", "import");
 const GLTF_PATH = path.join(RUNTIME_DIR, "BullDancer.gltf");
 const GLTF_META_PATH = GLTF_PATH + ".meta";
 const BIN_PATH = path.join(IMPORT_DIR, "BullDancer.bin");
-const JPG_PATH = path.join(RUNTIME_DIR, "BullAlbedo.jpg");
+const JPG_PATH = path.join(RUNTIME_DIR, ORIGINAL_DANCER_TEXTURE_FACTS.runtimeName);
+const SOURCE_DIR = path.join(PROJECT_ROOT, "source-assets", "dancer");
 
 const EXPECTED_FILES = {
     "BullDancer.gltf": {
-        bytes: 74213,
-        sha256: "ab4b402e58b3d3ed8999f267b06c833a8b5391d37548487ad89e25f39e5085f5"
+        bytes: 69033,
+        sha256: "6801bc4da322396b3e6ea3b25c183a08704131c2ae90ec15ac8c69db47c3aae5"
     },
-    "BullAlbedo.jpg": {
-        bytes: 377616,
-        sha256: "1c825c70adc1469de65f453c494f3749fee22686c8bdd08c8baa1028fcf41030"
+    "OriginalDancerAlbedo.jpg": {
+        bytes: ORIGINAL_DANCER_TEXTURE_FACTS.runtimeBytes,
+        sha256: ORIGINAL_DANCER_TEXTURE_FACTS.runtimeSha256
     }
 };
 
 const EXPECTED_IMPORT_BUFFER = {
-    bytes: 3859152,
-    sha256: "8c52122dd0d8ea2e4785e3c3ad42ec57460e415164758675da73c031b6097b66"
+    bytes: 2718976,
+    sha256: "66838470bd81b538f55b434119d319f0eb41b3e717fce21ce72242e1c7a9a8b2"
 };
 
 const EXPECTED_BASE_BUFFER_PREFIX = {
-    bytes: 3406860,
-    sha256: "0ae9d0faba3c3df5a0333880cf82f2a96d7669d082de5a8c38663963d773d7de"
+    bytes: 1731096,
+    sha256: "c8858498b8482bfc1b7bf1709c4daed103989128cfcee0396432c589bf40a146"
 };
 
 const EXPECTED_ANIMATIONS = {
-    IdleSway: 1.06666672,
-    DanceCombo: 26.8000011,
-    ResultPose: 18.8000011,
-    DanceCombo2: 20.46666717529297,
-    ResultPose2: 18.80000114440918,
-    ResultPose3: 3.8333334922790527,
-    IdleSway0: 1.0666667222976685
+    IdleSway: 1.0416666269302368,
+    DanceCombo: 26.79166603088379,
+    ResultPose: 12.458333015441895,
+    DanceCombo2: 20.45833396911621,
+    ResultPose2: 18.79166603088379,
+    ResultPose3: 3.8333332538604736,
+    IdleSway0: 1.0416666269302368
 };
 
 const EXPECTED_HIPS_RELATIVE_MOTION = {
-    DanceCombo: [-0.0352457481, 0.0370691419, -0.0000000093],
-    DanceCombo2: [0.2390609962, 0.0426396132, -0.0222857976],
-    ResultPose: [0.4665272665, -0.0310076475, 0],
-    ResultPose2: [0.6390499306, 0.0767080784, -0.2742886087],
-    ResultPose3: [-0.6838156151, 0.0282412171, 1.1868078867],
-    IdleSway0: [-0.0025533129, -0.0106902719, 0.0052320659]
+    DanceCombo: [-0.0568898979, 0.0510178208, 0.0043864433],
+    DanceCombo2: [0.2411682618, 0.0313188434, -0.0179434017],
+    ResultPose: [-0.1114851969, 0.322083652, 0.0704337723],
+    ResultPose2: [0.6528811467, 0.006064117, -0.2514213108],
+    ResultPose3: [-0.7343015659, 0.2726812959, 1.1239930011],
+    IdleSway0: [-0.0031579397, -0.0094211102, 0.0070317398]
 };
 
 const EXPECTED_RETARGET_ANIMATIONS = {
+    DanceCombo: {
+        channelCount: 35,
+        sourceRawGltfSha256: "17b8ff13767ec54124af373172a021ac55692465d281fafe380b4d668bb42ade",
+        sourceRawBinarySha256: "a09ff50aea935c4ca343c9f8f7b00dd329b835960cdd04e2db0807c95a879815"
+    },
     DanceCombo2: {
         channelCount: 25,
-        sourceIndexMismatchCount: 13,
-        sourceOptimizedGltfSha256:
-            "ff4734a6027ddd2698150519cb2f8a55c5cb735119e9027f90c51ed08e478b3d",
-        sourceFbxSha256:
-            "196aa9da46163f84a8ff1745352f01a2f317304964aadf422605ec2662fc6eab"
+        sourceRawGltfSha256: "d22cce7fe39050af4d4bceb6811feec9b4b86d893c5ab7a7e572508a96b86948",
+        sourceRawBinarySha256: "4e8d15d32aa166defa471ff83c13717f131e112acd4b3349e3648740d5c70725"
+    },
+    ResultPose: {
+        channelCount: 30,
+        sourceRawGltfSha256: "eb36ef9882d130558012da7c6a65ef583125001b31a478c4322b7400638b4d85",
+        sourceRawBinarySha256: "2ea7db8c4f021de5b17c01b9edb428b35339815c1738b2484d32f95d6f7e3598"
     },
     ResultPose2: {
         channelCount: 36,
-        sourceIndexMismatchCount: 19,
-        sourceOptimizedGltfSha256:
-            "6a5968f1cbbf967f4e18cd4049fb216d37b6acf0408e4ea835d268b2b1d7e941",
-        sourceFbxSha256:
-            "10f33f1c5b70771be6aaa22c9235d765fec40eda11a4b00659c44f1eb3627e19"
+        sourceRawGltfSha256: "6225a7d23005345245d8be3a593f75626dadbcb67af1d30887373f337bfaf923",
+        sourceRawBinarySha256: "68f04c58fd88fa40a44f12c418a121c97faf4e312a45d0d1d99819529b1f1af2"
     },
     ResultPose3: {
         channelCount: 29,
-        sourceIndexMismatchCount: 18,
-        sourceOptimizedGltfSha256:
-            "7cff15516a3d4fa739cfe0712acc668ab412c23e049bbbc004081bbefddf32dc",
-        sourceFbxSha256:
-            "94c047d02400ea73e9318d2cdf8562aebbc773182dc89072ae3ad39e5ac38413"
-    },
-    IdleSway0: {
-        channelCount: 34,
-        sourceIndexMismatchCount: 18,
-        sourceOptimizedGltfSha256:
-            "922b424ba65968d00ea2de13c1d45a587bdb26f5334f35d0034c510d41ecb19c",
-        sourceFbxSha256:
-            "c0fc77ec2595efb4db4ab949729a1b4e72536fa143311d759b9febc596909f33"
+        sourceRawGltfSha256: "b2e92fd1b22fedc6f8c2e7d5c4f4a8c99ed2ce55321afc65a16331c59552638c",
+        sourceRawBinarySha256: "d3ff13e71dac16ad267d00609536bc817c340413402e9002a687ed15a1c6dbf4"
     }
 };
 
 const EXPECTED_CREATOR_IMPORT = {
-    IdleSway: { maxFrameCount: 33, totalFrameCount: 1376 },
-    DanceCombo: { maxFrameCount: 805, totalFrameCount: 16827 },
-    ResultPose: { maxFrameCount: 565, totalFrameCount: 11879 },
-    DanceCombo2: { maxFrameCount: 615, totalFrameCount: 12914 },
-    ResultPose2: { maxFrameCount: 565, totalFrameCount: 11868 },
-    ResultPose3: { maxFrameCount: 116, totalFrameCount: 2433 },
-    IdleSway0: { maxFrameCount: 33, totalFrameCount: 945 }
+    IdleSway: { maxFrameCount: 26, totalFrameCount: 769 },
+    DanceCombo: { maxFrameCount: 644, totalFrameCount: 13533 },
+    ResultPose: { maxFrameCount: 300, totalFrameCount: 6281 },
+    DanceCombo2: { maxFrameCount: 492, totalFrameCount: 10337 },
+    ResultPose2: { maxFrameCount: 452, totalFrameCount: 9519 },
+    ResultPose3: { maxFrameCount: 93, totalFrameCount: 1969 },
+    IdleSway0: { maxFrameCount: 26, totalFrameCount: 769 }
 };
 
 function assert(condition, message) {
@@ -218,6 +222,24 @@ function collectBuiltClipRecords(value, sourcePath, output) {
     }
 }
 
+function assertOptionalSourceInputs() {
+    const presentNames = DANCER_SOURCE_NAMES.filter((name) => {
+        return fs.existsSync(path.join(SOURCE_DIR, name + ".fbx"));
+    });
+    if (presentNames.length === 0) {
+        console.log("dancer-source-inputs=absent provenance-only=ok");
+        return;
+    }
+    assert(presentNames.length === DANCER_SOURCE_NAMES.length,
+        "source-assets/dancer must contain either all seven audited FBXs or none");
+    const hashes = {};
+    presentNames.forEach((name) => {
+        hashes[name] = sha256(fs.readFileSync(path.join(SOURCE_DIR, name + ".fbx")));
+    });
+    assertExpectedSourceHashes(hashes);
+    console.log("dancer-source-inputs=ok files=7");
+}
+
 function assertCreatorBuildImport(dancerBuildDirectory) {
     const importDirectory = path.join(dancerBuildDirectory, "import");
     const nativeDirectory = path.join(dancerBuildDirectory, "native");
@@ -249,12 +271,13 @@ function assertCreatorBuildImport(dancerBuildDirectory) {
             record.name + " Creator native animation buffer is missing");
     });
     console.log(
-        "creator-build-import=ok durations=1.066667,26.800001,18.800001,20.466667,18.800001,3.833333,1.066667"
-            + " maxFrames=33,805,565,615,565,116,33"
+        "creator-build-import=ok durations=1.041667,26.791666,12.458333,20.458334,18.791666,3.833333,1.041667"
+            + " maxFrames=26,644,300,492,452,93,26"
     );
 }
 
 try {
+    assertOptionalSourceInputs();
     const runtimeFiles = fs.readdirSync(RUNTIME_DIR)
         .filter((name) => !name.endsWith(".meta"))
         .sort();
@@ -313,6 +336,12 @@ try {
         assert(view.buffer === 0, "bufferView " + index + " points at an unexpected buffer");
         assert(start >= 0 && end <= binary.length, "bufferView " + index + " is out of range");
     });
+    (gltf.accessors || []).forEach((accessor, index) => {
+        if (typeof accessor.bufferView === "number") {
+            assert(accessor.byteOffset === 0,
+                "accessor " + index + " needs an explicit zero byteOffset for Creator 2.4.9");
+        }
+    });
 
     assert(gltf.meshes && gltf.meshes.length === 1, "expected one dancer mesh");
     assert(gltf.meshes[0].primitives.length === 1, "expected one dancer mesh primitive");
@@ -320,12 +349,12 @@ try {
     const position = gltf.accessors[primitive.attributes.POSITION];
     const weights = gltf.accessors[primitive.attributes.WEIGHTS_0];
     const indices = gltf.accessors[primitive.indices];
-    assert(position.type === "VEC3" && position.count === 44995, "dancer vertex count changed");
-    assert(weights.type === "VEC4" && weights.count === 44995, "dancer weight count changed");
+    assert(position.type === "VEC3" && position.count === 29568, "dancer position count changed");
+    assert(weights.type === "VEC4" && weights.count === 29568, "dancer weight count changed");
     assert(weights.componentType === 5126 && !weights.normalized, "dancer weights must remain Float32");
-    assert(indices.type === "SCALAR" && indices.count === 288315, "dancer index count changed");
+    assert(indices.type === "SCALAR" && indices.count === 29568, "dancer index count changed");
     assert(indices.componentType === 5123, "dancer indices must remain Uint16");
-    assert(indices.count / 3 === 96105, "dancer triangle count changed");
+    assert(indices.count / 3 === 9856, "dancer triangle count changed");
 
     const weightView = gltf.bufferViews[weights.bufferView];
     const weightOffset = (weightView.byteOffset || 0) + (weights.byteOffset || 0);
@@ -347,7 +376,7 @@ try {
     assert(maximumWeightSumError <= 0.00001, "dancer weights are not normalized per vertex");
 
     assert(gltf.skins && gltf.skins.length === 1, "expected one dancer skin");
-    assert(gltf.skins[0].joints.length === 54, "dancer joint count changed");
+    assert(gltf.skins[0].joints.length === 33, "dancer joint count changed");
 
     const animationNames = (gltf.animations || []).map((animation) => animation.name).sort();
     assert(
@@ -386,8 +415,69 @@ try {
 
     const derivation = gltf.extras && gltf.extras.runtimeDerivation;
     assert(derivation, "runtime derivation metadata is missing");
+    const modelDerivation = derivation.model;
+    assertOriginalModelFacts({
+        sourceName: modelDerivation && modelDerivation.sourceName,
+        sourceFbxSha256: modelDerivation && modelDerivation.sourceFbxSha256,
+        nodeCount: modelDerivation && modelDerivation.nodeCount,
+        positionCount: modelDerivation && modelDerivation.positionCount,
+        triangleCount: modelDerivation && modelDerivation.triangleCount,
+        jointCount: modelDerivation && modelDerivation.jointCount
+    });
+    assert(modelDerivation.sourceRawGltfSha256
+        === "7433c00ee6b4e9af0b55c64ad34de95f564b294073d5646ac2f4cc008325a99e",
+    "base raw glTF provenance changed");
+    assert(modelDerivation.sourceRawBinarySha256
+        === "9e718c67b7cfb1472cece5ae382378f13a21bb07e9f5e4f5b49dbd3389f0d642",
+    "base raw binary provenance changed");
+    const weightNormalization = modelDerivation.weightNormalization;
+    assert(weightNormalization
+        && weightNormalization.operation === "divide each Float32 VEC4 by its per-vertex sum"
+        && weightNormalization.vertexCount === ORIGINAL_DANCER_MODEL_FACTS.positionCount,
+    "base weight normalization provenance changed");
+    assert(weightNormalization.maximumInputSumError > 0.9,
+        "source weight anomaly is no longer documented");
+    assert(weightNormalization.maximumOutputSumError <= 0.0000001,
+        "output weight normalization drifted");
+    assert(weightNormalization.outputBaseBinarySha256 === EXPECTED_BASE_BUFFER_PREFIX.sha256,
+        "normalized base binary provenance changed");
+
+    assert(JSON.stringify(derivation.texture) === JSON.stringify({
+        sourceName: ORIGINAL_DANCER_TEXTURE_FACTS.sourceName,
+        sourceSha256: ORIGINAL_DANCER_TEXTURE_FACTS.sourceSha256,
+        sourceWidth: ORIGINAL_DANCER_TEXTURE_FACTS.sourceWidth,
+        sourceHeight: ORIGINAL_DANCER_TEXTURE_FACTS.sourceHeight,
+        sourceHasAlpha: ORIGINAL_DANCER_TEXTURE_FACTS.sourceHasAlpha,
+        runtimeName: ORIGINAL_DANCER_TEXTURE_FACTS.runtimeName,
+        runtimeSha256: ORIGINAL_DANCER_TEXTURE_FACTS.runtimeSha256,
+        runtimeWidth: ORIGINAL_DANCER_TEXTURE_FACTS.runtimeWidth,
+        runtimeHeight: ORIGINAL_DANCER_TEXTURE_FACTS.runtimeHeight,
+        runtimeBytes: ORIGINAL_DANCER_TEXTURE_FACTS.runtimeBytes,
+        jpegQuality: ORIGINAL_DANCER_TEXTURE_FACTS.jpegQuality
+    }), "original dancer texture provenance changed");
+    const menuIdleAnimation = gltf.animations.find((animation) => animation.name === "IdleSway");
+    const gameplayIdleAnimation = gltf.animations.find((animation) => animation.name === "IdleSway0");
+    const menuIdleAccessors = menuIdleAnimation.samplers.map((sampler) => {
+        return [sampler.input, sampler.output];
+    });
+    const gameplayIdleAccessors = gameplayIdleAnimation.samplers.map((sampler) => {
+        return [sampler.input, sampler.output];
+    });
+    const idleAccessorsShared = JSON.stringify(menuIdleAccessors)
+        === JSON.stringify(gameplayIdleAccessors);
+    assertIdleAliasPolicy({
+        ...derivation.clipSources,
+        rawIdleMatchesDanceCombo: derivation.rawIdleInspection
+            && derivation.rawIdleInspection.matchesDanceCombo,
+        outputIdleSharesAccessors: idleAccessorsShared
+    });
+    assert(JSON.stringify(derivation.clipSources) === JSON.stringify(DANCER_CLIP_SOURCES),
+        "runtime clip/source mapping changed");
+    assert(derivation.rawIdleInspection.excludedFromRuntime === true
+        && derivation.rawIdleInspection.sourceFbxSha256 === EXPECTED_DANCER_FBX_SHA256.IdleSway,
+    "misleading raw IdleSway exclusion changed");
     assert(
-        derivation.hipsTranslationBaseline === "IdleSway",
+        derivation.hipsTranslationBaseline === "IdleSway0",
         "Hips translation baseline marker changed"
     );
     assert(
@@ -395,7 +485,6 @@ try {
             === JSON.stringify([
                 "DanceCombo",
                 "DanceCombo2",
-                "IdleSway0",
                 "ResultPose",
                 "ResultPose2",
                 "ResultPose3"
@@ -451,10 +540,10 @@ try {
             === "targetRestLocal * inverse(sourceRestLocal) * sourceAnimatedLocal",
         "retarget correction formula changed"
     );
-    assert(retarget.targetSkinJointCount === 54, "retarget target joint count changed");
+    assert(retarget.targetSkinJointCount === 33, "retarget target joint count changed");
     assert(
         retarget.sourceConversion
-            === "FBX2glTF 2.0 then gltfpack 1.2 -si 0.2 -sa -noq -kn -ac (30 Hz default)",
+            === "FBX2glTF 2.0 (Cocos Creator 2.4.9 bundled binary; no gltfpack or mesh decimation)",
         "retarget source conversion recipe changed"
     );
     assert(
@@ -490,8 +579,8 @@ try {
             mappedIndexMismatchCount += 1;
         }
     });
-    assert(mappedIndexMismatchCount > 0,
-        "retarget metadata no longer proves that node-index copying is invalid");
+    assert(mappedIndexMismatchCount === 0,
+        "same-rig source node indices unexpectedly changed");
 
     const mappingNames = new Set(mappings.map((mapping) => mapping.bone));
     Object.keys(EXPECTED_RETARGET_ANIMATIONS).forEach((animationName) => {
@@ -503,14 +592,22 @@ try {
         assert(summary.sourceSkinJointCount === 33, animationName + " source joint count changed");
         assert(summary.channelCount === expected.channelCount,
             animationName + " source channel count changed");
-        assert(summary.sourceIndexMismatchCount === expected.sourceIndexMismatchCount,
-            animationName + " source/target node mismatch count changed");
+        assert(summary.sourceIndexMismatchCount === 0,
+            animationName + " source/target node indices unexpectedly changed");
+        assert(summary.restMismatchChannelCount === expected.channelCount,
+            animationName + " no longer proves rest-space correction is required");
+        assert(summary.maximumSourceTargetRestDelta > 1,
+            animationName + " source/target rest delta is unexpectedly absent");
         assert(Math.abs(summary.duration - EXPECTED_ANIMATIONS[animationName]) <= 0.0001,
             animationName + " retarget duration metadata changed");
-        assert(summary.sourceOptimizedGltfSha256 === expected.sourceOptimizedGltfSha256,
-            animationName + " optimized source hash changed");
-        assert(summary.sourceFbxSha256 === expected.sourceFbxSha256,
+        assert(summary.sourceRawGltfSha256 === expected.sourceRawGltfSha256,
+            animationName + " direct-conversion glTF hash changed");
+        assert(summary.sourceRawBinarySha256 === expected.sourceRawBinarySha256,
+            animationName + " direct-conversion buffer hash changed");
+        assert(summary.sourceFbxSha256 === EXPECTED_DANCER_FBX_SHA256[animationName],
             animationName + " FBX source hash changed");
+        assert(summary.sourceTextureSha256 === ORIGINAL_DANCER_TEXTURE_FACTS.sourceSha256,
+            animationName + " source texture hash changed");
         assert(animation.channels.length === expected.channelCount,
             animationName + " output channel count changed");
         animation.channels.forEach((channel) => {
@@ -541,7 +638,7 @@ try {
             }
         });
     });
-    assert(rotationAccessors.size === 249, "dancer rotation accessor count changed");
+    assert(rotationAccessors.size === 172, "dancer rotation accessor count changed");
     let quaternionCount = 0;
     let minimumQuaternionNorm = Number.POSITIVE_INFINITY;
     let maximumQuaternionNorm = Number.NEGATIVE_INFINITY;
@@ -570,14 +667,15 @@ try {
         }
         quaternionCount += accessor.count;
     });
-    assert(quaternionCount === 55965, "dancer quaternion sample count changed");
+    assert(quaternionCount === 57394, "dancer quaternion sample count changed");
     assert(
         minimumQuaternionNorm >= 0.99999 && maximumQuaternionNorm <= 1.00001,
         "animation quaternions are not unit length"
     );
 
     assert(gltf.images && gltf.images.length === 1, "expected one dancer texture reference");
-    assert(gltf.images[0].uri === "BullAlbedo.jpg", "dancer texture URI changed");
+    assert(gltf.images[0].uri === ORIGINAL_DANCER_TEXTURE_FACTS.runtimeName,
+        "dancer texture URI changed");
     const runtimeUris = []
         .concat((gltf.buffers || []).map((item) => item.uri))
         .concat((gltf.images || []).map((item) => item.uri))
@@ -586,16 +684,17 @@ try {
         runtimeUris.every((uri) => !/[.]fbx(?:$|[/?#])|[.]fbm(?:$|[/?#])|Image_0[.]png/i.test(uri)),
         "runtime glTF must not reference raw FBX/FBM source material"
     );
-    assert(jpeg[0] === 0xff && jpeg[1] === 0xd8, "BullAlbedo.jpg is missing JPEG SOI magic");
+    assert(jpeg[0] === 0xff && jpeg[1] === 0xd8,
+        "OriginalDancerAlbedo.jpg is missing JPEG SOI magic");
     assert(
         jpeg[jpeg.length - 2] === 0xff && jpeg[jpeg.length - 1] === 0xd9,
-        "BullAlbedo.jpg is missing JPEG EOI magic"
+        "OriginalDancerAlbedo.jpg is missing JPEG EOI magic"
     );
 
     console.log(
-        "dancer-assets=ok vertices=44995 indices=288315 weights=Float32 joints=54"
-            + " quaternions=Float32/55965 hips=IdleSway-aligned"
-            + " retarget=name+parent/rest-local mappings=32"
+        "dancer-assets=ok positions=29568 triangles=9856 weights=Float32/normalized joints=33"
+            + " quaternions=Float32/57394 hips=IdleSway0-aligned"
+            + " model=IdleSway0-fbx retarget=name+parent/rest-local mappings=32"
             + " animations=IdleSway,DanceCombo,ResultPose,DanceCombo2,ResultPose2,ResultPose3,IdleSway0"
     );
     if (process.argv[2]) {

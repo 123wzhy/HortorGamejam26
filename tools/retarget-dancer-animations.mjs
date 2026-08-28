@@ -1,6 +1,16 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import {
+    DANCER_CLIP_SOURCES,
+    DANCER_SOURCE_NAMES,
+    EXPECTED_DANCER_FBX_SHA256,
+    ORIGINAL_DANCER_MODEL_FACTS,
+    ORIGINAL_DANCER_TEXTURE_FACTS,
+    assertExpectedSourceHashes,
+    assertIdleAliasPolicy,
+    assertOriginalModelFacts
+} from "./dancer-source-policy.mjs";
 
 const COMPONENTS = {
     SCALAR: 1,
@@ -19,11 +29,35 @@ const COMPONENT_INFO = {
     5126: { bytes: 4, read: "readFloatLE" }
 };
 
-const EXPECTED_SOURCE_FBX_SHA256 = {
-    DanceCombo2: "196aa9da46163f84a8ff1745352f01a2f317304964aadf422605ec2662fc6eab",
-    ResultPose2: "10f33f1c5b70771be6aaa22c9235d765fec40eda11a4b00659c44f1eb3627e19",
-    ResultPose3: "94c047d02400ea73e9318d2cdf8562aebbc773182dc89072ae3ad39e5ac38413",
-    IdleSway0: "c0fc77ec2595efb4db4ab949729a1b4e72536fa143311d759b9febc596909f33"
+const EXPECTED_RAW_CONVERSION = {
+    DanceCombo: {
+        gltfSha256: "17b8ff13767ec54124af373172a021ac55692465d281fafe380b4d668bb42ade",
+        binarySha256: "a09ff50aea935c4ca343c9f8f7b00dd329b835960cdd04e2db0807c95a879815"
+    },
+    DanceCombo2: {
+        gltfSha256: "d22cce7fe39050af4d4bceb6811feec9b4b86d893c5ab7a7e572508a96b86948",
+        binarySha256: "4e8d15d32aa166defa471ff83c13717f131e112acd4b3349e3648740d5c70725"
+    },
+    IdleSway: {
+        gltfSha256: "17b8ff13767ec54124af373172a021ac55692465d281fafe380b4d668bb42ade",
+        binarySha256: "a09ff50aea935c4ca343c9f8f7b00dd329b835960cdd04e2db0807c95a879815"
+    },
+    IdleSway0: {
+        gltfSha256: "7433c00ee6b4e9af0b55c64ad34de95f564b294073d5646ac2f4cc008325a99e",
+        binarySha256: "9e718c67b7cfb1472cece5ae382378f13a21bb07e9f5e4f5b49dbd3389f0d642"
+    },
+    ResultPose: {
+        gltfSha256: "eb36ef9882d130558012da7c6a65ef583125001b31a478c4322b7400638b4d85",
+        binarySha256: "2ea7db8c4f021de5b17c01b9edb428b35339815c1738b2484d32f95d6f7e3598"
+    },
+    ResultPose2: {
+        gltfSha256: "6225a7d23005345245d8be3a593f75626dadbcb67af1d30887373f337bfaf923",
+        binarySha256: "68f04c58fd88fa40a44f12c418a121c97faf4e312a45d0d1d99819529b1f1af2"
+    },
+    ResultPose3: {
+        gltfSha256: "b2e92fd1b22fedc6f8c2e7d5c4f4a8c99ed2ce55321afc65a16331c59552638c",
+        binarySha256: "d3ff13e71dac16ad267d00609536bc817c340413402e9002a687ed15a1c6dbf4"
+    }
 };
 
 function fail(message) {
@@ -46,6 +80,107 @@ function align4(value) {
 
 function sha256(buffer) {
     return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+function pngFacts(buffer) {
+    const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    assert(buffer.length >= 26 && buffer.subarray(0, 8).equals(signature),
+        "source texture is not a PNG");
+    assert(buffer.toString("ascii", 12, 16) === "IHDR", "source texture IHDR is missing");
+    const colorType = buffer[25];
+    return {
+        width: buffer.readUInt32BE(16),
+        height: buffer.readUInt32BE(20),
+        hasAlpha: colorType === 4 || colorType === 6
+    };
+}
+
+function accessorFingerprint(document, binary, accessorIndex) {
+    return sha256(Buffer.from(JSON.stringify(readAccessor(document, binary, accessorIndex))));
+}
+
+function hierarchyFingerprint(document) {
+    const parents = parentIndices(document);
+    return sha256(Buffer.from(JSON.stringify(document.nodes.map((node, index) => {
+        const parent = parents[index];
+        return [node.name || null, parent >= 0 ? document.nodes[parent].name || null : null];
+    }))));
+}
+
+function meshFacts(document) {
+    assert(document.meshes && document.meshes.length === 1, "source must contain one mesh");
+    assert(document.meshes[0].primitives && document.meshes[0].primitives.length === 1,
+        "source must contain one mesh primitive");
+    const primitive = document.meshes[0].primitives[0];
+    const position = document.accessors[primitive.attributes.POSITION];
+    const weights = document.accessors[primitive.attributes.WEIGHTS_0];
+    const indices = document.accessors[primitive.indices];
+    assert(position && weights && indices, "source mesh accessors are incomplete");
+    assert(indices.count % 3 === 0, "source mesh index count is not triangular");
+    return {
+        nodeCount: document.nodes.length,
+        positionCount: position.count,
+        triangleCount: indices.count / 3,
+        jointCount: document.skins[0].joints.length,
+        positionAccessor: primitive.attributes.POSITION,
+        texcoordAccessor: primitive.attributes.TEXCOORD_0,
+        jointsAccessor: primitive.attributes.JOINTS_0,
+        weightsAccessor: primitive.attributes.WEIGHTS_0,
+        indicesAccessor: primitive.indices
+    };
+}
+
+function normalizeSkinWeights(document, sourceBinary, weightsAccessorIndex) {
+    const accessor = document.accessors[weightsAccessorIndex];
+    assert(accessor.componentType === 5126 && accessor.type === "VEC4" && !accessor.normalized,
+        "base skin weights must be non-normalized Float32 VEC4");
+    const view = document.bufferViews[accessor.bufferView];
+    const stride = view.byteStride || 16;
+    const start = (view.byteOffset || 0) + (accessor.byteOffset || 0);
+    assert(stride >= 16, "base skin weight stride is too small");
+    const binary = Buffer.from(sourceBinary);
+    let maximumInputSumError = 0;
+    let maximumOutputSumError = 0;
+    for (let vertex = 0; vertex < accessor.count; vertex += 1) {
+        const offset = start + vertex * stride;
+        const values = [];
+        let sum = 0;
+        for (let component = 0; component < 4; component += 1) {
+            const value = sourceBinary.readFloatLE(offset + component * 4);
+            assert(Number.isFinite(value) && value >= 0,
+                "base skin weight is negative or non-finite");
+            values.push(value);
+            sum += value;
+        }
+        assert(sum > 0, "base skin vertex has zero total weight");
+        maximumInputSumError = Math.max(maximumInputSumError, Math.abs(sum - 1));
+        let outputSum = 0;
+        values.forEach((value, component) => {
+            const normalized = value / sum;
+            binary.writeFloatLE(normalized, offset + component * 4);
+            outputSum += binary.readFloatLE(offset + component * 4);
+        });
+        maximumOutputSumError = Math.max(maximumOutputSumError, Math.abs(outputSum - 1));
+    }
+    assert(maximumInputSumError > 0.9,
+        "source weight anomaly disappeared; review whether normalization is still required");
+    assert(maximumOutputSumError <= 0.0000001,
+        "normalized skin weights do not sum to one");
+    return {
+        binary,
+        vertexCount: accessor.count,
+        maximumInputSumError,
+        maximumOutputSumError,
+        outputSha256: sha256(binary)
+    };
+}
+
+function animationAccessors(animation) {
+    const accessors = [];
+    animation.samplers.forEach((sampler) => {
+        accessors.push(sampler.input, sampler.output);
+    });
+    return accessors;
 }
 
 function decodeNormalized(value, componentType, normalized) {
@@ -457,13 +592,16 @@ function firstAnimationPath(document, binary, animationName, nodeName, pathName)
     return readAccessor(document, binary, sampler.output)[0];
 }
 
-function loadSource(specification) {
+function loadSource(specification, sourceFbxDirectory) {
     const equals = specification.indexOf("=");
     assert(equals > 0, "source specification must be Name=/path/to/file.gltf");
     const name = specification.slice(0, equals);
     const gltfPath = path.resolve(specification.slice(equals + 1));
-    assert(EXPECTED_SOURCE_FBX_SHA256[name], "unexpected source animation: " + name);
-    const document = JSON.parse(fs.readFileSync(gltfPath, "utf8"));
+    assert(EXPECTED_DANCER_FBX_SHA256[name], "unexpected source animation: " + name);
+    const gltfBytes = fs.readFileSync(gltfPath);
+    const document = JSON.parse(gltfBytes.toString("utf8"));
+    assert(document.asset && document.asset.version === "2.0", name + " must be glTF 2.0");
+    assert(document.asset.generator === "FBX2glTF", name + " must come directly from FBX2glTF");
     assert(document.buffers && document.buffers.length === 1, name + " must use one buffer");
     const bufferUri = document.buffers[0].uri;
     assert(bufferUri && !bufferUri.startsWith("data:"), name + " must use an external buffer");
@@ -471,36 +609,145 @@ function loadSource(specification) {
     assert(binary.length === document.buffers[0].byteLength, name + " buffer length mismatch");
     assert(document.animations && document.animations.length === 1, name + " must contain one animation");
     assert(document.skins && document.skins.length === 1, name + " must contain one skin");
-    return { name, gltfPath, document, binary, animation: document.animations[0] };
+    assert(document.images && document.images.length === 1, name + " must contain one source texture");
+    assert(document.images[0].uri === ORIGINAL_DANCER_TEXTURE_FACTS.sourceName,
+        name + " source texture URI changed");
+    const imagePath = path.resolve(path.dirname(gltfPath), document.images[0].uri);
+    const image = fs.readFileSync(imagePath);
+    const imageFacts = pngFacts(image);
+    assert(sha256(image) === ORIGINAL_DANCER_TEXTURE_FACTS.sourceSha256,
+        name + " embedded texture hash changed");
+    assert(imageFacts.width === ORIGINAL_DANCER_TEXTURE_FACTS.sourceWidth
+        && imageFacts.height === ORIGINAL_DANCER_TEXTURE_FACTS.sourceHeight
+        && imageFacts.hasAlpha === ORIGINAL_DANCER_TEXTURE_FACTS.sourceHasAlpha,
+    name + " embedded texture dimensions/alpha changed");
+    const sourceFbxPath = path.join(sourceFbxDirectory, name + ".fbx");
+    const sourceFbxSha256 = sha256(fs.readFileSync(sourceFbxPath));
+    const rawExpected = EXPECTED_RAW_CONVERSION[name];
+    assert(sha256(gltfBytes) === rawExpected.gltfSha256,
+        name + " direct FBX2glTF document changed");
+    assert(sha256(binary) === rawExpected.binarySha256,
+        name + " direct FBX2glTF buffer changed");
+    return {
+        name,
+        gltfPath,
+        document,
+        binary,
+        animation: document.animations[0],
+        sourceFbxSha256,
+        sourceGltfSha256: sha256(gltfBytes),
+        sourceBinarySha256: sha256(binary),
+        sourceTextureSha256: sha256(image)
+    };
 }
 
 function main() {
     const argumentsList = process.argv.slice(2);
-    assert(argumentsList.length === 8, "usage: retarget base.gltf base.bin output.gltf output.bin Name=source.gltf ...");
-    const baseGltfPath = path.resolve(argumentsList[0]);
-    const baseBinPath = path.resolve(argumentsList[1]);
-    const outputGltfPath = path.resolve(argumentsList[2]);
-    const outputBinPath = path.resolve(argumentsList[3]);
-    const sources = argumentsList.slice(4).map(loadSource);
+    assert(argumentsList.length === 12,
+        "usage: retarget source-fbx-dir output.gltf output.bin runtime.jpg texture-uri Name=source.gltf ...");
+    const sourceFbxDirectory = path.resolve(argumentsList[0]);
+    const outputGltfPath = path.resolve(argumentsList[1]);
+    const outputBinPath = path.resolve(argumentsList[2]);
+    const runtimeTexturePath = path.resolve(argumentsList[3]);
+    const runtimeTextureUri = argumentsList[4];
+    const sources = argumentsList.slice(5).map((specification) => {
+        return loadSource(specification, sourceFbxDirectory);
+    });
     assert(
         JSON.stringify(sources.map((source) => source.name))
-            === JSON.stringify(["DanceCombo2", "ResultPose2", "ResultPose3", "IdleSway0"]),
-        "sources must be ordered DanceCombo2, ResultPose2, ResultPose3, IdleSway0"
+            === JSON.stringify(DANCER_SOURCE_NAMES),
+        "sources must follow the audited seven-file order"
     );
+    const sourcesByName = new Map(sources.map((source) => [source.name, source]));
+    assertExpectedSourceHashes(Object.fromEntries(sources.map((source) => {
+        return [source.name, source.sourceFbxSha256];
+    })));
 
-    const baseDocument = JSON.parse(fs.readFileSync(baseGltfPath, "utf8"));
-    const baseBinary = fs.readFileSync(baseBinPath);
-    assert(baseDocument.buffers && baseDocument.buffers.length === 1, "base must use one buffer");
-    assert(baseBinary.length === baseDocument.buffers[0].byteLength, "base buffer length mismatch");
-    assert(baseDocument.skins && baseDocument.skins.length === 1, "base must contain one skin");
-    assert(baseDocument.skins[0].joints.length === 54, "base target rig must keep 54 joints");
-    assert(
-        JSON.stringify(baseDocument.animations.map((animation) => animation.name))
-            === JSON.stringify(["IdleSway", "DanceCombo", "ResultPose"]),
-        "base must contain exactly the original three animations"
+    const base = sourcesByName.get(ORIGINAL_DANCER_MODEL_FACTS.sourceName);
+    const baseDocument = base.document;
+    const baseMeshFacts = meshFacts(baseDocument);
+    assertOriginalModelFacts({
+        sourceName: base.name,
+        sourceFbxSha256: base.sourceFbxSha256,
+        nodeCount: baseMeshFacts.nodeCount,
+        positionCount: baseMeshFacts.positionCount,
+        triangleCount: baseMeshFacts.triangleCount,
+        jointCount: baseMeshFacts.jointCount
+    });
+    const baseWeights = baseDocument.accessors[baseMeshFacts.weightsAccessor];
+    assert(baseWeights.componentType === 5126 && !baseWeights.normalized,
+        "base skin weights must remain non-normalized Float32");
+    const weightNormalization = normalizeSkinWeights(
+        baseDocument,
+        base.binary,
+        baseMeshFacts.weightsAccessor
     );
+    const baseBinary = weightNormalization.binary;
+    const baseCompatibility = {
+        hierarchySha256: hierarchyFingerprint(baseDocument),
+        texcoordSha256: accessorFingerprint(baseDocument, base.binary, baseMeshFacts.texcoordAccessor),
+        jointsSha256: accessorFingerprint(baseDocument, base.binary, baseMeshFacts.jointsAccessor),
+        weightsSha256: accessorFingerprint(baseDocument, base.binary, baseMeshFacts.weightsAccessor),
+        indicesSha256: accessorFingerprint(baseDocument, base.binary, baseMeshFacts.indicesAccessor),
+        materialSha256: sha256(Buffer.from(JSON.stringify({
+            samplers: baseDocument.samplers,
+            textures: baseDocument.textures,
+            materials: baseDocument.materials
+        })))
+    };
+    sources.forEach((source) => {
+        const facts = meshFacts(source.document);
+        assert(facts.nodeCount === ORIGINAL_DANCER_MODEL_FACTS.nodeCount,
+            source.name + " node count changed");
+        assert(facts.positionCount === ORIGINAL_DANCER_MODEL_FACTS.positionCount,
+            source.name + " position count changed");
+        assert(facts.triangleCount === ORIGINAL_DANCER_MODEL_FACTS.triangleCount,
+            source.name + " triangle count changed");
+        assert(facts.jointCount === ORIGINAL_DANCER_MODEL_FACTS.jointCount,
+            source.name + " joint count changed");
+        const compatibility = {
+            hierarchySha256: hierarchyFingerprint(source.document),
+            texcoordSha256: accessorFingerprint(source.document, source.binary, facts.texcoordAccessor),
+            jointsSha256: accessorFingerprint(source.document, source.binary, facts.jointsAccessor),
+            weightsSha256: accessorFingerprint(source.document, source.binary, facts.weightsAccessor),
+            indicesSha256: accessorFingerprint(source.document, source.binary, facts.indicesAccessor),
+            materialSha256: sha256(Buffer.from(JSON.stringify({
+                samplers: source.document.samplers,
+                textures: source.document.textures,
+                materials: source.document.materials
+            })))
+        };
+        assert(JSON.stringify(compatibility) === JSON.stringify(baseCompatibility),
+            source.name + " mesh UV/skin/material compatibility changed");
+    });
+
+    const rawIdle = sourcesByName.get("IdleSway");
+    const danceCombo = sourcesByName.get("DanceCombo");
+    const rawIdleMatchesDanceCombo = rawIdle.sourceGltfSha256 === danceCombo.sourceGltfSha256
+        && rawIdle.sourceBinarySha256 === danceCombo.sourceBinarySha256;
+    assertIdleAliasPolicy({
+        ...DANCER_CLIP_SOURCES,
+        rawIdleMatchesDanceCombo,
+        outputIdleSharesAccessors: true
+    });
+
+    const runtimeTexture = fs.readFileSync(runtimeTexturePath);
+    assert(runtimeTexture.length === ORIGINAL_DANCER_TEXTURE_FACTS.runtimeBytes,
+        "runtime texture byte length changed");
+    assert(sha256(runtimeTexture) === ORIGINAL_DANCER_TEXTURE_FACTS.runtimeSha256,
+        "runtime texture SHA-256 changed");
+    assert(runtimeTexture[0] === 0xff && runtimeTexture[1] === 0xd8,
+        "runtime texture is not JPEG");
+    assert(runtimeTextureUri === ORIGINAL_DANCER_TEXTURE_FACTS.runtimeName,
+        "runtime texture URI must be semantic and stable");
 
     const outputDocument = clone(baseDocument);
+    outputDocument.asset.generator = "FBX2glTF 2.0 + deterministic rest-space animation merge";
+    outputDocument.buffers[0].uri = "../import/BullDancer.bin";
+    outputDocument.images[0].name = ORIGINAL_DANCER_TEXTURE_FACTS.runtimeName;
+    outputDocument.images[0].uri = runtimeTextureUri;
+    outputDocument.meshes[0].name = "OriginalDancer";
+    outputDocument.animations = [];
     const binaryParts = [baseBinary];
     const binaryState = { length: baseBinary.length };
     const targetNodes = uniqueNodeMap(baseDocument);
@@ -508,19 +755,21 @@ function main() {
     const idleHipsFirst = firstAnimationPath(
         baseDocument,
         baseBinary,
-        "IdleSway",
+        base.animation.name,
         "Hips",
         "translation"
     );
     const mappingRecords = new Map();
     const summaries = {};
+    const retargetedAnimations = new Map();
     let maximumRestRecoveryError = 0;
     let maximumTrsResidual = 0;
     let maximumQuaternionNormError = 0;
 
-    sources.forEach((source) => {
-        assert(source.document.skins[0].joints.length === 33, source.name + " source rig must have 33 joints");
+    ["DanceCombo", "ResultPose", "DanceCombo2", "ResultPose2", "ResultPose3"].forEach((name) => {
+        const source = sourcesByName.get(name);
         const sourceNodes = uniqueNodeMap(source.document);
+        assert(sourceNodes.size > 0, source.name + " source node names are missing");
         const sourceParents = parentIndices(source.document);
         const tracks = trackMap(source.document, source.binary, source.animation);
         const inputAccessorMap = new Map();
@@ -528,6 +777,8 @@ function main() {
         let sourceDuration = 0;
         let channelCount = 0;
         let sourceIndexMismatchCount = 0;
+        let restMismatchChannelCount = 0;
+        let maximumSourceTargetRestDelta = 0;
         let hipsOutputValues = null;
 
         source.animation.channels.forEach((sourceChannel) => {
@@ -535,15 +786,16 @@ function main() {
             const sourceNode = source.document.nodes[sourceNodeIndex];
             const pathName = sourceChannel.target.path;
             const targetNodeIndex = targetNodes.get(sourceNode.name);
-            assert(typeof targetNodeIndex === "number", source.name + " target bone is missing: " + sourceNode.name);
+            assert(typeof targetNodeIndex === "number",
+                source.name + " target bone is missing: " + sourceNode.name);
             const sourceParentIndex = sourceParents[sourceNodeIndex];
             const targetParentIndex = targetParents[targetNodeIndex];
-            const sourceParentName = sourceParentIndex >= 0 ? source.document.nodes[sourceParentIndex].name : null;
-            const targetParentName = targetParentIndex >= 0 ? baseDocument.nodes[targetParentIndex].name : null;
-            assert(
-                sourceParentName === targetParentName,
-                source.name + " parent hierarchy differs for " + sourceNode.name
-            );
+            const sourceParentName = sourceParentIndex >= 0
+                ? source.document.nodes[sourceParentIndex].name : null;
+            const targetParentName = targetParentIndex >= 0
+                ? baseDocument.nodes[targetParentIndex].name : null;
+            assert(sourceParentName === targetParentName,
+                source.name + " parent hierarchy differs for " + sourceNode.name);
             if (sourceNodeIndex !== targetNodeIndex) {
                 sourceIndexMismatchCount += 1;
             }
@@ -556,16 +808,21 @@ function main() {
                 parent: sourceParentName
             };
             if (existingMapping) {
-                assert(
-                    JSON.stringify(existingMapping) === JSON.stringify(mapping),
-                    "source rig indices changed between new animation files"
-                );
+                assert(JSON.stringify(existingMapping) === JSON.stringify(mapping),
+                    "source rig mapping changed between animation files");
             } else {
                 mappingRecords.set(mappingKey, mapping);
             }
 
             const sourceRestMatrix = matrixFromTrs(nodeTrs(sourceNode));
             const targetRestMatrix = matrixFromTrs(nodeTrs(baseDocument.nodes[targetNodeIndex]));
+            const restDelta = Math.max(...sourceRestMatrix.map((value, index) => {
+                return Math.abs(value - targetRestMatrix[index]);
+            }));
+            maximumSourceTargetRestDelta = Math.max(maximumSourceTargetRestDelta, restDelta);
+            if (restDelta > 1e-9) {
+                restMismatchChannelCount += 1;
+            }
             const correction = multiplyMatrices(targetRestMatrix, invertMatrix(sourceRestMatrix));
             const recoveredRest = multiplyMatrices(correction, sourceRestMatrix);
             maximumRestRecoveryError = Math.max(
@@ -642,32 +899,94 @@ function main() {
 
         assert(hipsOutputValues, source.name + " Hips translation output is missing");
         hipsOutputValues[0].forEach((value, index) => {
-            assert(Math.abs(value - idleHipsFirst[index]) <= 1e-7, source.name + " Hips baseline failed");
+            assert(Math.abs(value - idleHipsFirst[index]) <= 1e-7,
+                source.name + " Hips baseline failed");
         });
-        assert(sourceIndexMismatchCount > 0, source.name + " did not prove name-based node mapping");
-        outputDocument.animations.push(outputAnimation);
+        assert(restMismatchChannelCount === channelCount,
+            source.name + " no longer proves rest-space correction is necessary");
+        retargetedAnimations.set(source.name, outputAnimation);
         summaries[source.name] = {
             sourceNodeCount: source.document.nodes.length,
             sourceSkinJointCount: source.document.skins[0].joints.length,
             channelCount,
             sourceIndexMismatchCount,
+            restMismatchChannelCount,
+            maximumSourceTargetRestDelta,
             duration: sourceDuration,
-            sourceOptimizedGltfSha256: sha256(fs.readFileSync(source.gltfPath)),
-            sourceFbxSha256: EXPECTED_SOURCE_FBX_SHA256[source.name]
+            sourceRawGltfSha256: source.sourceGltfSha256,
+            sourceRawBinarySha256: source.sourceBinarySha256,
+            sourceFbxSha256: source.sourceFbxSha256,
+            sourceTextureSha256: source.sourceTextureSha256
         };
     });
 
     assert(maximumRestRecoveryError <= 1e-9, "rest-space recovery error is too large");
     assert(maximumTrsResidual <= 0.0001, "retargeted TRS contains material shear");
     assert(maximumQuaternionNormError <= 1e-12, "retargeted quaternion normalization drifted");
+    const menuIdle = clone(base.animation);
+    menuIdle.name = "IdleSway";
+    const gameplayIdle = clone(base.animation);
+    gameplayIdle.name = "IdleSway0";
+    assert(JSON.stringify(animationAccessors(menuIdle)) === JSON.stringify(animationAccessors(gameplayIdle)),
+        "idle aliases must share source accessors");
+    outputDocument.animations = [
+        menuIdle,
+        retargetedAnimations.get("DanceCombo"),
+        retargetedAnimations.get("ResultPose"),
+        retargetedAnimations.get("DanceCombo2"),
+        retargetedAnimations.get("ResultPose2"),
+        retargetedAnimations.get("ResultPose3"),
+        gameplayIdle
+    ];
     outputDocument.buffers[0].byteLength = binaryState.length;
     outputDocument.extras = outputDocument.extras || {};
     outputDocument.extras.runtimeDerivation = {
-        hipsTranslationBaseline: "IdleSway",
+        model: {
+            sourceName: base.name,
+            sourceFbxSha256: base.sourceFbxSha256,
+            sourceRawGltfSha256: base.sourceGltfSha256,
+            sourceRawBinarySha256: base.sourceBinarySha256,
+            nodeCount: baseMeshFacts.nodeCount,
+            positionCount: baseMeshFacts.positionCount,
+            triangleCount: baseMeshFacts.triangleCount,
+            jointCount: baseMeshFacts.jointCount,
+            weightNormalization: {
+                operation: "divide each Float32 VEC4 by its per-vertex sum",
+                vertexCount: weightNormalization.vertexCount,
+                maximumInputSumError: weightNormalization.maximumInputSumError,
+                maximumOutputSumError: weightNormalization.maximumOutputSumError,
+                outputBaseBinarySha256: weightNormalization.outputSha256
+            },
+            compatibility: baseCompatibility
+        },
+        texture: {
+            sourceName: ORIGINAL_DANCER_TEXTURE_FACTS.sourceName,
+            sourceSha256: ORIGINAL_DANCER_TEXTURE_FACTS.sourceSha256,
+            sourceWidth: ORIGINAL_DANCER_TEXTURE_FACTS.sourceWidth,
+            sourceHeight: ORIGINAL_DANCER_TEXTURE_FACTS.sourceHeight,
+            sourceHasAlpha: ORIGINAL_DANCER_TEXTURE_FACTS.sourceHasAlpha,
+            runtimeName: runtimeTextureUri,
+            runtimeSha256: sha256(runtimeTexture),
+            runtimeWidth: ORIGINAL_DANCER_TEXTURE_FACTS.runtimeWidth,
+            runtimeHeight: ORIGINAL_DANCER_TEXTURE_FACTS.runtimeHeight,
+            runtimeBytes: runtimeTexture.length,
+            jpegQuality: ORIGINAL_DANCER_TEXTURE_FACTS.jpegQuality
+        },
+        clipSources: DANCER_CLIP_SOURCES,
+        rawIdleInspection: {
+            sourceFbxSha256: rawIdle.sourceFbxSha256,
+            matchesDanceCombo: rawIdleMatchesDanceCombo,
+            excludedFromRuntime: true
+        },
+        idleAlias: {
+            menu: "IdleSway0 source animation",
+            gameplay: "IdleSway0 source animation",
+            sharedAccessors: true
+        },
+        hipsTranslationBaseline: "IdleSway0",
         alignedAnimations: [
             "DanceCombo",
             "DanceCombo2",
-            "IdleSway0",
             "ResultPose",
             "ResultPose2",
             "ResultPose3"
@@ -678,7 +997,8 @@ function main() {
             restSpace: "node-local TRS",
             formula: "targetRestLocal * inverse(sourceRestLocal) * sourceAnimatedLocal",
             targetSkinJointCount: baseDocument.skins[0].joints.length,
-            sourceConversion: "FBX2glTF 2.0 then gltfpack 1.2 -si 0.2 -sa -noq -kn -ac (30 Hz default)",
+            sourceConversion:
+                "FBX2glTF 2.0 (Cocos Creator 2.4.9 bundled binary; no gltfpack or mesh decimation)",
             baseBinaryPrefixBytes: baseBinary.length,
             baseBinaryPrefixSha256: sha256(baseBinary),
             maximumRestRecoveryError,
@@ -703,6 +1023,8 @@ function main() {
         outputBytes: outputBinary.length,
         outputSha256: sha256(outputBinary),
         animationNames: outputDocument.animations.map((animation) => animation.name),
+        model: outputDocument.extras.runtimeDerivation.model,
+        texture: outputDocument.extras.runtimeDerivation.texture,
         maximumRestRecoveryError,
         maximumTrsResidual,
         maximumQuaternionNormError,

@@ -3,16 +3,16 @@
   "uuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
   "importer": "gltf",
   "scaleFactor": 1,
-  "boneCount": 54,
+  "boneCount": 33,
   "precomputeJointMatrix": false,
   "animationFrameRate": 30,
   "subMetas": {
-    "undefined.mesh": {
+    "OriginalDancer.mesh": {
       "ver": "1.0.3",
       "uuid": "f5519b34-0494-408b-b6cb-4f2da174b463",
       "importer": "mesh",
-      "verts": 44995,
-      "tris": 96105,
+      "verts": 29568,
+      "tris": 9856,
       "submeshes": 1,
       "attributes": [
         [
@@ -24,16 +24,16 @@
         ]
       ],
       "minPos": {
-        "x": -0.00773073221,
-        "y": 0.000106430052,
-        "z": -0.00396334426
+        "x": -0.00737512949854136,
+        "y": -0.000585109577514231,
+        "z": -0.00427114497870207
       },
       "maxPos": {
-        "x": 0.00718841795,
-        "y": 0.0181184411,
-        "z": 0.00326609937
+        "x": 0.00737421680241823,
+        "y": 0.0175748001784086,
+        "z": 0.00347492657601833
       },
-      "name": "undefined.mesh",
+      "name": "OriginalDancer.mesh",
       "subMetas": {}
     },
     "BullDancer-0.skeleton": {
@@ -50,9 +50,9 @@
       "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
       "animationID": 0,
       "name": "IdleSway.sac",
-      "maxFrameCount": 33,
-      "totalFrameCount": 1376,
-      "duration": 1.0666667222976685,
+      "maxFrameCount": 26,
+      "totalFrameCount": 769,
+      "duration": 1.0416666269302368,
       "animationFrameRate": 30,
       "subMetas": {}
     },
@@ -63,9 +63,9 @@
       "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
       "animationID": 1,
       "name": "DanceCombo.sac",
-      "maxFrameCount": 805,
-      "totalFrameCount": 16827,
-      "duration": 26.80000114440918,
+      "maxFrameCount": 644,
+      "totalFrameCount": 13533,
+      "duration": 26.79166603088379,
       "animationFrameRate": 30,
       "subMetas": {}
     },
@@ -76,9 +76,9 @@
       "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
       "animationID": 2,
       "name": "ResultPose.sac",
-      "maxFrameCount": 565,
-      "totalFrameCount": 11879,
-      "duration": 18.80000114440918,
+      "maxFrameCount": 300,
+      "totalFrameCount": 6281,
+      "duration": 12.458333015441895,
       "animationFrameRate": 30,
       "subMetas": {}
     },
@@ -89,9 +89,9 @@
       "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
       "animationID": 3,
       "name": "DanceCombo2.sac",
-      "maxFrameCount": 615,
-      "totalFrameCount": 12914,
-      "duration": 20.46666717529297,
+      "maxFrameCount": 492,
+      "totalFrameCount": 10337,
+      "duration": 20.45833396911621,
       "animationFrameRate": 30,
       "subMetas": {}
     },
@@ -102,9 +102,9 @@
       "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
       "animationID": 4,
       "name": "ResultPose2.sac",
-      "maxFrameCount": 565,
-      "totalFrameCount": 11868,
-      "duration": 18.80000114440918,
+      "maxFrameCount": 452,
+      "totalFrameCount": 9519,
+      "duration": 18.79166603088379,
       "animationFrameRate": 30,
       "subMetas": {}
     },
@@ -115,9 +115,9 @@
       "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
       "animationID": 5,
       "name": "ResultPose3.sac",
-      "maxFrameCount": 116,
-      "totalFrameCount": 2433,
-      "duration": 3.8333334922790527,
+      "maxFrameCount": 93,
+      "totalFrameCount": 1969,
+      "duration": 3.8333332538604736,
       "animationFrameRate": 30,
       "subMetas": {}
     },
@@ -128,9 +128,9 @@
       "modelUuid": "508ee521-26c8-46f3-a82d-a5a96d00b8fd",
       "animationID": 6,
       "name": "IdleSway0.sac",
-      "maxFrameCount": 33,
-      "totalFrameCount": 945,
-      "duration": 1.0666667222976685,
+      "maxFrameCount": 26,
+      "totalFrameCount": 769,
+      "duration": 1.0416666269302368,
       "animationFrameRate": 30,
       "subMetas": {}
     },

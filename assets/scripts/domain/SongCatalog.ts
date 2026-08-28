@@ -38,8 +38,8 @@ export interface SongSessionConfig {
 
 export const PERFECT_NOTE_SCORE = 1000;
 export const PASS_PERCENT = 60;
-export const FIRST_DANCE_DURATION_MS = 26800.00114440918;
-export const SECOND_DANCE_DURATION_MS = 20466.66717529297;
+export const FIRST_DANCE_DURATION_MS = 26791.66603088379;
+export const SECOND_DANCE_DURATION_MS = 20458.33396911621;
 
 export const DEMO_SONGS: SongDefinition[] = [
     {

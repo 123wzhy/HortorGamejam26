@@ -2,7 +2,7 @@
 
 这是一个可直接用 **Cocos Creator 2.4.9** 打开、构建和游玩的横屏手机音游 MVP。谱面按组合展示，但组合内每个方向键都有独立目标时刻：玩家在箭头自己的判定时间直接输入，每次方向输入即结算为 `Perfect / Good / Bad / Miss` 之一。
 
-当前版本不依赖 npm 第三方包或外部 CDN。`assets/texture/` 固定收录 29 张运行时贴图：背景、菜单专用 Logo、玩法 Logo、任务/选歌面板、菜单按钮、两套方向键以及选曲行、播放和暂停资源均已接入当前界面。原有 8 张附加玩法贴图也保留在清单中，其中 `gameplayDancer` 是尚未接线的 2D 备选图，不是当前舞台角色。当前舞台角色来自独立 `dancer` 3D Bundle；Bundle 提供 7 段 clip：菜单固定使用旧 `IdleSway`，进入玩法与组间输入等待使用新 `IdleSway0`，两首歌分别使用 `DanceCombo / ResultPose` 与 `DanceCombo2 / ResultPose2`，未及格统一使用 `ResultPose3`。任务进度与两首 `DEMO_SONGS` 的选曲信息由运行时真实数据叠加，判定条、状态面板与降级容器仍由 `cc.Graphics`、`cc.Label` 和系统字体生成。`assets/design/` 只作为布局与风格参考，不会进入运行 Bundle。
+当前版本不依赖 npm 第三方包或外部 CDN。`assets/texture/` 固定收录 29 张运行时贴图：背景、菜单专用 Logo、玩法 Logo、任务/选歌面板、菜单按钮、两套方向键以及选曲行、播放和暂停资源均已接入当前界面。原有 8 张附加玩法贴图也保留在清单中，其中 `gameplayDancer` 是尚未接线的 2D 备选图，不是当前舞台角色。当前舞台角色来自独立 `dancer` 3D Bundle；Bundle 使用 `IdleSway0.fbx` 自带的低面模型、33-joint 骨架与黄衣角色纹理，并提供 7 段 clip。菜单仍调用稳定名 `IdleSway`，但它与玩法等待用的 `IdleSway0` 共享同一段新待机数据；两首歌分别使用 `DanceCombo / ResultPose` 与 `DanceCombo2 / ResultPose2`，未及格统一使用 `ResultPose3`。任务进度与两首 `DEMO_SONGS` 的选曲信息由运行时真实数据叠加，判定条、状态面板与降级容器仍由 `cc.Graphics`、`cc.Label` 和系统字体生成。`assets/design/` 只作为布局与风格参考，不会进入运行 Bundle。
 
 ## 快速开始
 
@@ -28,9 +28,11 @@ npm run verify
 - `npm run verify`：重新构建，检查 head/SDK/source map、29 张 texture 清单、7 段舞者动画与 Bundle 预算，生成并检查 `build/builda-web.zip`；同时生成只含两段宿主试听音频的 `build/builda-assets.zip` 并执行 `builda assets check`。
 
 原始舞者 FBX 只放在 Creator 资源数据库之外的 `source-assets/dancer/`，不得放入 `assets/`。
-运行时只消费已转换并检入的 glTF/JPEG/bin；这样 Creator 不会把 FBX 自带模型和纹理当作运行资源，
-也不会尝试解析不存在的 `.fbm/Image_0.png`。源 FBX、转换器生成的 `.fbm/` 及其 `.meta` 均不提交。
-当前四段新增动作的源文件哈希、转换参数、骨名/父级与 rest-space 重定向证据由
+运行时只消费由这些 FBX 生成并检入的 glTF/JPEG/bin；模型、骨架、UV、材质和动作都保留原始 FBX
+来源，但 Creator 不会直接导入 FBX，也不会尝试解析不存在的 `.fbm/Image_0.png`。源 FBX、转换器
+生成的 `.fbm/` 及其 `.meta` 均不提交。`tools/rebuild-dancer-assets.sh` 会先把七份源文件复制到
+`mktemp`，再调用 Creator 2.4.9 自带的 FBX2glTF；转换不使用 gltfpack，也不做网格减面。
+七份源文件哈希、原始模型/纹理 provenance、骨名/父级与 rest-space 重定向证据由
 `tools/verify-dancer-assets.mjs` 锁定；源文件与重定向注意事项见 `source-assets/dancer/README.md`。
 
 若 Creator 不在默认路径，可显式指定：
@@ -50,15 +52,15 @@ COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 
 `GameBootstrap.onLoad()` 会先同步创建可见、可点击的降级菜单并绑定输入，再并行等待 Builda 平台与 `texture` Bundle。平台 ready 后即可点击开始；若 `Builda.runtime.ready()` 超过 3 秒仍未返回，适配器会清理计时器、记录警告并进入浏览器兼容模式，避免宿主异常永久封锁入口。美术回调延迟或不返回不会再造成空白或阻塞。贴图稍后到达时只原位更新现有 SpriteFrame，不重建按钮或重复绑定监听。菜单状态由同一启动状态模型计算，因此平台 ready 与美术成功/缺失的回调顺序不会互相覆盖成错误提示。纵向安全区挤压到信息卡不足可读高度时，会成对隐藏非关键任务/选歌卡并持续显示原因；空间恢复后自动重新显示，开始按钮、状态和输入提示始终保留。
 
-`DancerAnimationController` 同样独立异步预载 `dancer` Bundle，但不参与平台 ready、开始按钮或组间流程门控。`AbstractDancer` 挂在不会随菜单/玩法切换而隐藏的常驻 UI 根节点；只有安全区布局主动收起舞台或信息弹层打开时才临时隐藏，避免遮挡关键文本。背景、`dancer` 与 `hud` 使用前后相邻的相机层，角色以接近半屏高度居中显示，Logo、分数、方向键、完成信息和弹层始终在角色前方。加载成功并建立分层相机、且首个活动帧的 54 组蒙皮矩阵均为有限值后，才禁用容器上的 `cc.Graphics` 组件，绝不通过停用整个容器来切换降级角色。任一 Bundle、Prefab、动画、相机或首帧蒙皮准备失败只记录警告并继续使用 2D 降级。
+`DancerAnimationController` 同样独立异步预载 `dancer` Bundle，但不参与平台 ready、开始按钮或组间流程门控。`AbstractDancer` 挂在不会随菜单/玩法切换而隐藏的常驻 UI 根节点；只有安全区布局主动收起舞台或信息弹层打开时才临时隐藏，避免遮挡关键文本。背景、`dancer` 与 `hud` 使用前后相邻的相机层，角色以接近半屏高度居中显示，Logo、分数、方向键、完成信息和弹层始终在角色前方。加载成功并建立分层相机、且首个活动帧的 33 组蒙皮矩阵均为有限值后，才禁用容器上的 `cc.Graphics` 组件，绝不通过停用整个容器来切换降级角色。任一 Bundle、Prefab、动画、相机或首帧蒙皮准备失败只记录警告并继续使用 2D 降级。
 
-`GroupDanceFlow` 是不依赖 Cocos 的权威流程时钟。每组方向全部结算后，界面立即隐藏组合黑板、箭头和触控方向键，暂停 `SongClock`、输入与自动 Miss，再播放当前歌曲舞蹈的对应连续片段：第一首 `DanceCombo` 总长 `26.800001144s`，第二首 `DanceCombo2` 总长 `20.466667175s`，都按八组严格切成连续区间并在整局覆盖一次。非末组舞段结束时切回玩法待机 `IdleSway0`，再展示下一组并恢复歌曲时钟；末组舞段结束后才按 60% 分数线显示成功或失败，播放歌曲专属成功动作或共用失败动作、停留末帧并记录一次本地成绩。舞者资源尚未加载或彻底失败时，同一纯流程仍会按时放行。宿主切后台会同时冻结流程、骨骼动画和歌曲时钟，回前台按原阶段恢复；重新开始或返回主页会清除旧舞段、结果和歌曲会话状态且不会记录中断局。
+`GroupDanceFlow` 是不依赖 Cocos 的权威流程时钟。每组方向全部结算后，界面立即隐藏组合黑板、箭头和触控方向键，暂停 `SongClock`、输入与自动 Miss，再播放当前歌曲舞蹈的对应连续片段：第一首 `DanceCombo` 总长 `26.791666031s`，第二首 `DanceCombo2` 总长 `20.458333969s`，都按八组严格切成连续区间并在整局覆盖一次。非末组舞段结束时切回玩法待机 `IdleSway0`，再展示下一组并恢复歌曲时钟；末组舞段结束后才按 60% 分数线显示成功或失败，播放歌曲专属成功动作或共用失败动作、停留末帧并记录一次本地成绩。舞者资源尚未加载或彻底失败时，同一纯流程仍会按时放行。宿主切后台会同时冻结流程、骨骼动画和歌曲时钟，回前台按原阶段恢复；重新开始或返回主页会清除旧舞段、结果和歌曲会话状态且不会记录中断局。
 
 本地榜使用项目专属固定 key `hortor_gamejam26_local_leaderboard_v1` 保存于设备 `localStorage`。每条记录包含分数、最高连击、完成时间与单调稳定顺序；先按分数降序，再按最高连击降序，同分同连击时按较早完成和稳定顺序排列，只保留前 10 条。最近完整结算摘要会额外保留；榜外完整历史不会保留，因此最近成绩未进入前 10 时只显示这一事实，不伪造“第 11 名”等精确名次。`localStorage` 缺失、拒绝访问、配额写入失败或数据损坏时，榜单自动退化为当前会话内存数据，并在弹层显示未持久化提示，不会阻断开始、结算或重开。
 
 引擎始终只处理时间最早的未结算 note。输入早于当前 note 的最早可判定时刻时，只显示“请等待”，不会消耗 note；进入 `Bad` 窗口后按错方向会让当前 note 立即失败；超过最晚边界仍未输入则自动失败。分数和 Combo 都逐 note 结算，失败断连击；一次自动 catch-up 或一次方向输入遇到组合边界就停止，绝不会借严重掉帧或同一次按键跨组结算下一组。下一组只会在当前舞段结束后出现。
 
-两首 Demo 谱面都包含 8 个确定性组合、共 31 个 note。`NEON GRID` 为 100 BPM、每拍 `600ms`，谱面时间轴为 `24.780s`，使用 `DanceCombo / ResultPose`；`GOLDEN STAMPEDE` 为 120 BPM、每拍 `500ms`，谱面时间轴为 `20.680s`，使用 `DanceCombo2 / ResultPose2`。两首未及格时都播放 `ResultPose3`。组间舞段不消耗歌曲时间，包含完整舞蹈的一轮分别约 `51.58s` 与 `41.15s`。试听文件由 `tools/generate-song-preview.mjs` 按各自 BPM 生成 16 拍原创 PCM 循环，时长分别为 `9.6s` 与 `8.0s`，与谱面/曲目 ID 一一映射。四种判定与单键基础分为：
+两首 Demo 谱面都包含 8 个确定性组合、共 31 个 note。`NEON GRID` 为 100 BPM、每拍 `600ms`，谱面时间轴为 `24.780s`，使用 `DanceCombo / ResultPose`；`GOLDEN STAMPEDE` 为 120 BPM、每拍 `500ms`，谱面时间轴为 `20.680s`，使用 `DanceCombo2 / ResultPose2`。两首未及格时都播放 `ResultPose3`。组间舞段不消耗歌曲时间，包含完整舞蹈的一轮分别约 `51.57s` 与 `41.14s`。试听文件由 `tools/generate-song-preview.mjs` 按各自 BPM 生成 16 拍原创 PCM 循环，时长分别为 `9.6s` 与 `8.0s`，与谱面/曲目 ID 一一映射。四种判定与单键基础分为：
 
 - 完美（Perfect）：`±50ms`，`1000` 分
 - 好（Good）：`±100ms`，`700` 分
@@ -101,7 +103,7 @@ assets/scripts/
 - `assets/texture/` 是已确认运行时素材，并配置为名为 `texture` 的本地 Cocos Asset Bundle；全部 29 张贴图均由 `ArtAssetCatalog` 校验后加载。
 - 8 张附加玩法贴图依据用户提供的《游戏界面完整版》设计效果图由 ImageGen 透明拆分并核验为 RGBA；仓库内仅保存经 macOS `sips` 按最长边缩放的运行时派生图，生成源图保持不变；它们与当前 3D 舞者是两套独立资源。
 - `songPreviewPlay / songPreviewPause / songRowSelected / songRowIdle` 依据本轮选歌参考图由 ImageGen 分别生成透明按钮与可九宫格拉伸的空行底板；生成时未把参考图中的示例星级、文字或整张面板烘焙进运行资源。
-- `assets/spine/runtime/` 配置为名为 `dancer` 的本地 Bundle，只包含轻量 glTF、1024 JPEG 与 Creator 2.4.9 生成的运行时子资源；约 3.68 MiB 外部 buffer 单独放在非 Bundle 的 `assets/spine/import/`，仅供 Creator 导入，发布构建不会再重复收录它。模型保留 54 个 joint，权重与全部动画 rotation quaternion 都使用 Float32：前者规避 Creator 2.4.9 把归一化 Uint8 权重导成 0–255 未归一化数据，后者规避归一化 Int16 四元数被当成原始大整数。四段新增动作按唯一骨名与相同父骨映射，并使用 `targetRestLocal × inverse(sourceRestLocal) × sourceAnimatedLocal` 修正源/目标局部 rest-space 差异；所有非菜单待机动作的 Hips 首帧再以三轴常量偏移对齐旧 `IdleSway` 基准，不改变各段内部相对位移。Creator 2.4.9 对新增 accessor 还要求显式 `byteOffset: 0`，资源门禁会直接检查 glTF、`.meta` 和真实构建中的时长/帧数。
+- `assets/spine/runtime/` 配置为名为 `dancer` 的本地 Bundle，只包含轻量 glTF、2048 JPEG 与 Creator 2.4.9 生成的运行时子资源；约 2.59 MiB 外部 buffer 单独放在非 Bundle 的 `assets/spine/import/`，仅供 Creator 导入，发布构建不会再重复收录它。模型来自 `IdleSway0.fbx`，保留 9,856 个三角面、29,568 个 POSITION entry 与 33 个 joint，不再继承旧的 96,105 三角面/54-joint 模型。七份 FBX 提取的 8192 `Image_0.png` 字节一致；运行时 `OriginalDancerAlbedo.jpg` 是该原图的 2048/Q85 确定性派生图，而不是旧高面角色纹理。权重和全部 animation rotation quaternion 都使用 Float32；原始权重还会逐顶点除以四分量和，避免未归一化蒙皮。五段非待机动作按唯一骨名与相同父骨映射，并使用 `targetRestLocal × inverse(sourceRestLocal) × sourceAnimatedLocal` 修正源/目标局部 rest-space 差异；Hips 首帧再以三轴常量偏移对齐 `IdleSway0` 基准，不改变各段内部相对位移。原始 `IdleSway.fbx` 的动作字节实际与 `DanceCombo.fbx` 相同，因此运行时 `IdleSway` 明确复用 `IdleSway0` accessor。七段 Creator 导入时长依次为 `1.041667 / 26.791666 / 12.458333 / 20.458334 / 18.791666 / 3.833333 / 1.041667s`。Creator 2.4.9 对 accessor 还要求显式 `byteOffset: 0`，资源门禁会直接检查 glTF、`.meta` 和真实构建中的时长/帧数。
 - 所有原始 FBX 与转换器产生的 `.fbm/Image_0.png` 只在 `source-assets/dancer/` 或系统临时目录作为本地源材保留，不放入 Creator 的 `assets/`，不提交、不被场景引用，也绝不进入 Web 构建或发布 zip。模型加载失败时保留原有 `cc.Graphics` 舞者，不阻塞平台 ready 或核心玩法。
 - 背景按比例 cover；Logo、按钮、任务面板和选歌面板等比缩放、不拉伸；交互层同时避让安全区和 Builda 右上胶囊。
 - 任务面板只叠加当前引擎快照中的完成组数、得分和最高连击；选歌面板遍历 `DEMO_SONGS`，标题、BPM、组数、音符数和星级全部来自仓库运行数据，不采用设计稿里的示例数字或歌名。
