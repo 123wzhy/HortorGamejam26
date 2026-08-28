@@ -1,0 +1,38 @@
+{
+  "ver": "2.3.7",
+  "uuid": "0645917a-2baf-4010-8d64-09c1fc6be39a",
+  "importer": "texture",
+  "type": "sprite",
+  "wrapMode": "clamp",
+  "filterMode": "bilinear",
+  "premultiplyAlpha": false,
+  "genMipmaps": false,
+  "packable": true,
+  "width": 696,
+  "height": 564,
+  "platformSettings": {},
+  "subMetas": {
+    "songSelectPanel": {
+      "ver": "1.0.6",
+      "uuid": "b493e254-96ff-429f-8ee2-a2754cec7b62",
+      "importer": "sprite-frame",
+      "rawTextureUuid": "0645917a-2baf-4010-8d64-09c1fc6be39a",
+      "trimType": "auto",
+      "trimThreshold": 1,
+      "rotated": false,
+      "offsetX": -16.5,
+      "offsetY": 11,
+      "trimX": 0,
+      "trimY": 0,
+      "width": 663,
+      "height": 542,
+      "rawWidth": 696,
+      "rawHeight": 564,
+      "borderTop": 0,
+      "borderBottom": 0,
+      "borderLeft": 0,
+      "borderRight": 0,
+      "subMetas": {}
+    }
+  }
+}

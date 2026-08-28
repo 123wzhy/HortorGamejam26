@@ -17,6 +17,7 @@
     "assets/scripts/input/PressedKeyState.ts",
     "assets/scripts/platform/BuildaAdapter.ts",
     "assets/scripts/ui/RhythmLayout.ts",
+    "assets/scripts/ui/UiStartupState.ts",
     "tests/logic.spec.ts"
   ]
 }

@@ -1,6 +1,9 @@
 export type ArtAssetName =
     "BackGround"
     | "logo"
+    | "menuLogo"
+    | "todayTaskPanel"
+    | "songSelectPanel"
     | "startBtn"
     | "settingBtn"
     | "rankBtn"
@@ -25,6 +28,9 @@ export type ArtAssetName =
 export const REQUIRED_ART_ASSETS: ArtAssetName[] = [
     "BackGround",
     "logo",
+    "menuLogo",
+    "todayTaskPanel",
+    "songSelectPanel",
     "startBtn",
     "settingBtn",
     "rankBtn",
