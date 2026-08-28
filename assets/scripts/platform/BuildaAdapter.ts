@@ -18,6 +18,8 @@ export interface BuildaViewportMetrics {
     hosted: boolean;
 }
 
+export const DEFAULT_BUILDA_READY_TIMEOUT_MS = 3000;
+
 function nonNegative(value: unknown): number {
     return typeof value === "number" && isFinite(value) ? Math.max(0, value) : 0;
 }
@@ -36,17 +38,59 @@ export function calculateRightAvoidance(
 
 /** Thin platform boundary. Gameplay never reaches into the host bridge directly. */
 export class BuildaAdapter {
+    private readonly readyTimeoutMs: number;
+
+    public constructor(readyTimeoutMs: number = DEFAULT_BUILDA_READY_TIMEOUT_MS) {
+        this.readyTimeoutMs = typeof readyTimeoutMs === "number" && isFinite(readyTimeoutMs)
+            ? Math.max(0, readyTimeoutMs)
+            : DEFAULT_BUILDA_READY_TIMEOUT_MS;
+    }
+
     public ready(): Promise<void> {
         const builda = this.getBuilda();
         if (!builda || !builda.runtime || typeof builda.runtime.ready !== "function") {
             return Promise.resolve();
         }
         try {
-            return Promise.resolve(builda.runtime.ready())
-                .then(() => undefined)
-                .catch((error: unknown) => {
-                    console.warn("[BuildaAdapter] runtime.ready failed; continuing in fallback mode", error);
-                });
+            const hostReady = builda.runtime.ready();
+            return new Promise<void>((resolve) => {
+                let settled = false;
+                let timeoutHandle: any = null;
+                const settle = (): void => {
+                    if (settled) {
+                        return;
+                    }
+                    settled = true;
+                    if (timeoutHandle !== null) {
+                        clearTimeout(timeoutHandle);
+                        timeoutHandle = null;
+                    }
+                    resolve();
+                };
+
+                timeoutHandle = setTimeout(() => {
+                    if (settled) {
+                        return;
+                    }
+                    console.warn(
+                        "[BuildaAdapter] runtime.ready timed out after "
+                        + this.readyTimeoutMs
+                        + "ms; continuing in fallback mode"
+                    );
+                    settle();
+                }, this.readyTimeoutMs);
+
+                Promise.resolve(hostReady).then(
+                    () => settle(),
+                    (error: unknown) => {
+                        if (settled) {
+                            return;
+                        }
+                        console.warn("[BuildaAdapter] runtime.ready failed; continuing in fallback mode", error);
+                        settle();
+                    }
+                );
+            });
         } catch (error) {
             console.warn("[BuildaAdapter] runtime.ready threw; continuing in fallback mode", error);
             return Promise.resolve();

@@ -42,12 +42,72 @@ export interface NoteChipVerticalLayout {
     miniBarHalfHeight: number;
 }
 
+export interface MenuFooterVerticalLayoutInput {
+    viewportHeight: number;
+    safeBottom: number;
+    startButtonHeight: number;
+    startButtonScale: number;
+}
+
+export interface MenuFooterVerticalLayout {
+    hintY: number;
+    startY: number;
+    startButtonBottom: number;
+    startButtonTop: number;
+    statusY: number;
+    statusLabelHeight: number;
+    statusBottom: number;
+    statusTop: number;
+    cardBottom: number;
+    buttonStatusGap: number;
+    statusCardGap: number;
+}
+
 function finiteOr(value: number, fallback: number): number {
     return isFinite(value) ? value : fallback;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {
     return Math.max(minimum, Math.min(maximum, value));
+}
+
+/**
+ * Anchors the menu footer from the lower safe-area edge and allocates each
+ * vertical layer by its real bounds. This keeps scaled button artwork, status
+ * text and the two card panels separated at both supported viewport heights.
+ */
+export function calculateMenuFooterVerticalLayout(
+    input: MenuFooterVerticalLayoutInput
+): MenuFooterVerticalLayout {
+    const viewportHeight = Math.max(1, finiteOr(input.viewportHeight, 720));
+    const safeBottom = Math.max(0, finiteOr(input.safeBottom, 0));
+    const startButtonScale = Math.max(0, finiteOr(input.startButtonScale, 1));
+    const startButtonHeight = Math.max(0, finiteOr(input.startButtonHeight, 145)) * startButtonScale;
+    const statusLabelHeight = 24;
+    const buttonStatusGap = 10;
+    const statusCardGap = 12;
+    const hintY = -viewportHeight * 0.5 + safeBottom + 40;
+    const startButtonBottom = hintY + 50;
+    const startY = startButtonBottom + startButtonHeight * 0.5;
+    const startButtonTop = startButtonBottom + startButtonHeight;
+    const statusBottom = startButtonTop + buttonStatusGap;
+    const statusY = statusBottom + statusLabelHeight * 0.5;
+    const statusTop = statusBottom + statusLabelHeight;
+    const cardBottom = statusTop + statusCardGap;
+
+    return {
+        hintY,
+        startY,
+        startButtonBottom,
+        startButtonTop,
+        statusY,
+        statusLabelHeight,
+        statusBottom,
+        statusTop,
+        cardBottom,
+        buttonStatusGap,
+        statusCardGap
+    };
 }
 
 /**
