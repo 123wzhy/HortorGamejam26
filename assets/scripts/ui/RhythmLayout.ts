@@ -63,6 +63,23 @@ export interface MenuFooterVerticalLayout {
     statusCardGap: number;
 }
 
+export interface MenuCardVerticalLayoutInput {
+    logoBottom: number;
+    cardBottom: number;
+    preferredCardHeight: number;
+    maximumCardHeight: number;
+}
+
+export interface MenuCardVerticalLayout {
+    visible: boolean;
+    cardHeight: number;
+    cardTop: number | null;
+    maximumCardTop: number;
+    availableCardHeight: number;
+    minimumReadableHeight: number;
+    logoCardGap: number;
+}
+
 function finiteOr(value: number, fallback: number): number {
     return isFinite(value) ? value : fallback;
 }
@@ -107,6 +124,38 @@ export function calculateMenuFooterVerticalLayout(
         cardBottom,
         buttonStatusGap,
         statusCardGap
+    };
+}
+
+/**
+ * Fits the optional task/song cards between the footer and the logo. Cards are
+ * hidden as a pair when the remaining height cannot preserve readable content;
+ * a visible card can never cross the explicit logo clearance boundary.
+ */
+export function calculateMenuCardVerticalLayout(
+    input: MenuCardVerticalLayoutInput
+): MenuCardVerticalLayout {
+    const logoBottom = finiteOr(input.logoBottom, 0);
+    const cardBottom = finiteOr(input.cardBottom, 0);
+    const preferredCardHeight = Math.max(0, finiteOr(input.preferredCardHeight, 0));
+    const maximumCardHeight = Math.max(0, finiteOr(input.maximumCardHeight, 0));
+    const minimumReadableHeight = 96;
+    const logoCardGap = 8;
+    const maximumCardTop = logoBottom - logoCardGap;
+    const availableCardHeight = Math.max(0, maximumCardTop - cardBottom);
+    const desiredCardHeight = Math.min(preferredCardHeight, maximumCardHeight);
+    const visible = availableCardHeight >= minimumReadableHeight
+        && desiredCardHeight >= minimumReadableHeight;
+    const cardHeight = visible ? Math.min(desiredCardHeight, availableCardHeight) : 0;
+
+    return {
+        visible,
+        cardHeight,
+        cardTop: visible ? cardBottom + cardHeight : null,
+        maximumCardTop,
+        availableCardHeight,
+        minimumReadableHeight,
+        logoCardGap
     };
 }
 

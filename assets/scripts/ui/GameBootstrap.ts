@@ -7,6 +7,7 @@ import { BuildaAdapter, BuildaViewportMetrics, calculateRightAvoidance } from ".
 import { SongClock } from "../timing/SongClock";
 import { ArtAssetCatalog, ArtAssetName, REQUIRED_ART_ASSETS } from "./ArtAssetCatalog";
 import {
+    calculateMenuCardVerticalLayout,
     calculateMenuFooterVerticalLayout,
     calculateNoteChipVerticalLayout,
     calculateRhythmVerticalLayout
@@ -143,6 +144,7 @@ export default class GameBootstrap extends cc.Component {
         hosted: false
     };
     private startupState: UiStartupState = initialUiStartupState();
+    private menuCardsHiddenForSafeArea: boolean = false;
     private uiReady: boolean = false;
     private gameplayActive: boolean = false;
     private pausedByHost: boolean = false;
@@ -247,7 +249,10 @@ export default class GameBootstrap extends cc.Component {
 
     private refreshStartupStatus(): void {
         if (this.menuStatusLabel) {
-            this.menuStatusLabel.string = startupStatusText(this.startupState);
+            this.menuStatusLabel.string = startupStatusText(
+                this.startupState,
+                this.menuCardsHiddenForSafeArea
+            );
         }
     }
 
@@ -738,12 +743,21 @@ export default class GameBootstrap extends cc.Component {
         const preferredCardWidth = Math.min(310, contentWidth * 0.28);
         const cardBottom = footer.cardBottom;
         const logoBottom = this.menuLogo.y - logoHeight * 0.5;
-        const availableCardHeight = Math.max(96, logoBottom - 8 - cardBottom);
-        const cardHeight = Math.min(
-            preferredCardWidth / panelAspect,
-            compact ? 184 : 252,
-            availableCardHeight
-        );
+        const cardLayout = calculateMenuCardVerticalLayout({
+            logoBottom,
+            cardBottom,
+            preferredCardHeight: preferredCardWidth / panelAspect,
+            maximumCardHeight: compact ? 184 : 252
+        });
+        this.menuCardsHiddenForSafeArea = !cardLayout.visible;
+        this.menuTaskPanel.active = cardLayout.visible;
+        this.menuSongPanel.active = cardLayout.visible;
+        this.refreshStartupStatus();
+        if (!cardLayout.visible) {
+            return;
+        }
+
+        const cardHeight = cardLayout.cardHeight;
         const cardWidth = Math.min(preferredCardWidth, cardHeight * panelAspect);
         const cardSideMargin = Math.max(18, Math.min(42, contentWidth * 0.035));
         const cardY = cardBottom + cardHeight * 0.5;
@@ -827,7 +841,7 @@ export default class GameBootstrap extends cc.Component {
 
     private startGame(): void {
         if (!canEnterGameplay(this.startupState)) {
-            this.menuStatusLabel.string = "仍在连接创游世界，请稍候…";
+            this.refreshStartupStatus();
             return;
         }
         this.hideInfo();
