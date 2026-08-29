@@ -50,6 +50,8 @@ COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 
 `GameBootstrap.onLoad()` 会先同步创建可见、可点击的降级菜单并绑定输入，再并行等待 Builda 平台与 `texture` Bundle。平台 ready 后即可开始；若 `Builda.runtime.ready()` 超过 3 秒仍未返回，适配器会清理计时器、记录警告并进入浏览器兼容模式。美术异步失败不会阻塞核心玩法，稍后到达的贴图只更新现有 SpriteFrame，不重建按钮或重复绑定监听。
 
+`GroupDanceFlow` 是不依赖 Cocos 的权威组间时钟；同文件中的 `SettlementFlow` 负责最终结果动作、成绩卡和自动返回。每组方向全部结算后，界面隐藏组合黑板、箭头和触控方向键并锁住输入与自动 Miss，但真实 BGM 和 `SongClock` 继续前进；本局选中的动作组总时长按八组严格切成连续区间。非末组舞段结束后切回 `IdleSway0` 并展示下一组；末组舞段结束后停止 BGM、按 60% 分数线确定成败，并完整播放本局 profile 对应的成功动作或共用失败动作。结果动作结束后显示独立成绩卡，列出得分、最高连击、及格线和结算数量，停留 5 秒后自动返回主菜单，也可点击“立即返回主菜单”。大帧间隔至多推进一个结算阶段，不能跳过成绩卡；舞者资源加载失败时仍按资源标定时长放行。宿主切后台会冻结结算流程和骨骼动画，回前台从原阶段恢复；重新开始或返回主页会清除旧舞段、结果和歌曲会话状态。
+
 `DancerAnimationController` 独立异步预载 `dancer` Bundle，但不参与平台 ready 或关卡进入门控。加载成功并建立分层相机、且首个活动帧的 33 组蒙皮矩阵均为有限值后，才禁用 2D 降级绘制；Bundle、Prefab、动画、相机或首帧蒙皮失败时只记录警告并继续使用降级角色。
 
 本地榜使用项目专属 key `hortor_gamejam26_local_leaderboard_v1`。记录先按分数、最高连击降序，再按较早完成时间和稳定顺序排序，只保留前 10 条。`localStorage` 缺失、拒绝访问、配额失败或数据损坏时退化为会话内存数据，不阻断开始、结算或重开。
@@ -65,6 +67,8 @@ COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 | Are You OK / 雷军 | `124.82 / 115.5ms` | `132.807s` | `27 / 1★` | `7.807s / 52.210s` | `55.559s / 54.768s` | `A / B 随机` |
 
 组合之间的最小音频时钟空档分别约为 `5.191s / 5.324s / 4.807s`，均覆盖更长的动作组 A 单组舞段和两侧 `Bad` 判定余量，因此两套动作对三首歌曲都安全。`GroupDanceFlow` 在舞段中锁住输入与自动 Miss，但真实 BGM 和 `SongClock` 连续前进；舞段结束后下一组已经按原歌曲时间轴排好，不再像短循环占位曲那样暂停歌曲时钟。
+
+玩法 HUD 在结果动作期间只显示短状态和演出倒计时，不再把完整结算句叠到顶部分数上；动作结束后的独立成绩卡显示成功/失败、实际得分、最高连击、及格线和结算数量。无论成败，只要完整走完最终舞段就恰好写入一次本地榜，中途回主页或切歌不会入榜。
 
 每首进入玩法时都使用选曲页对应的同一份 MP3，并设置 `loop=false`。试听使用 `loop=true`。播放、停止、快速切歌、返回和重新开始都经过同一串行音频控制器：关卡时钟尽量在宿主 `playBGM()` Promise 完成的边界启动；宿主音频不可用或拒绝时仍启动单调 fallback 时钟。重新开始会从头请求同一首 BGM；返回主页与最终结算会停止 BGM；过期的异步播放完成后会被再次停止，避免旧请求泄漏。
 
@@ -90,7 +94,7 @@ assets/scripts/
   domain/LocalLeaderboard.ts    本地榜排序、截断、持久化与会话降级
   domain/SongCatalog.ts         三曲稳定 ID、两套动作组、随机选择与局内会话
   timing/SongClock.ts           单调时钟、暂停/恢复/停止与校准偏移
-  gameplay/GroupDanceFlow.ts    八组连续舞段、输入锁与完成阶段
+  gameplay/GroupDanceFlow.ts    八组连续舞段、输入锁、结果动作与五秒结算时钟
   gameplay/JudgeSystem.ts       四档逐 note 判定窗口与固定分值
   gameplay/SequenceEngine.ts    最早 note、超时、组推进、得分与重开
   gameplay/TimingProgress.ts    全局/mini 判定条共享进度映射
@@ -105,7 +109,7 @@ assets/scripts/
   ui/GameBootstrap.ts           选曲、歌曲会话、结算与生命周期
 ```
 
-`SequenceEngine`、`GroupDanceFlow`、`LocalLeaderboard`、`JudgeSystem`、`TimingProgress`、`RhythmLayout`、`BeatmapDifficulty`、`SongPreviewController` 和 `UiStartupState` 不引用 `cc`。测试直接编译同一份 TypeScript，实现覆盖三曲 catalog、随机值边界与非法值、两套动作组可达性、每歌 × 每动作组的谱面空档/会话/舞段/结算一致性、循环索引、连续歌曲时钟、选曲布局、试听/玩法 loop 差异以及快速切换和取消竞态。
+`SequenceEngine`、`GroupDanceFlow`、`SettlementFlow`、`LocalLeaderboard`、`JudgeSystem`、`TimingProgress`、`RhythmLayout`、`BeatmapDifficulty`、`SongPreviewController` 和 `UiStartupState` 不引用 `cc`。测试直接编译同一份 TypeScript，实现覆盖三曲 catalog、随机值边界与非法值、两套动作组可达性、每歌 × 每动作组的谱面空档/会话/舞段/结果动作时长、五秒成绩卡与自动回主页、循环索引、连续歌曲时钟、选曲布局、试听/玩法 loop 差异以及快速切换和取消竞态。
 
 ## 资源与发布门禁
 
@@ -116,6 +120,8 @@ assets/scripts/
 - `tools/verify-builda.sh` 明确只把 `feng-wu-jiu-tian.mp3`、`zhu-zhu-xia.mp3` 与 `are-you-ok.mp3` 放入外置 assets zip；主 zip 对 `.mp3/.ogg/.wav` 保持零容忍。
 
 背景按比例 cover；Logo、按钮、任务面板和选歌面板等比缩放、不拉伸；交互层同时避让安全区与 Builda 右上胶囊。纵向空间不足时优先隐藏次要提示和非关键舞台，保留开始按钮、判定区和触控热区；异常 inset 会钳制到最后一个无重叠位置并显示“安全区受限”。
+
+`SongClock` 每次判定都从 `performance.now()`（不可用时才回退 `Date.now()`）推导歌曲时间，不用每帧 `dt` 累加。组间舞段保持歌曲时钟连续，最终舞段结束后才暂停并停止 BGM；Creator 生命周期事件、`visibilitychange` 和 `pagehide/pageshow` 会共同冻结歌曲时钟、舞者与结算倒计时，回前台从原阶段继续。窗口失焦时还会清空按键去重状态。`setCalibrationOffsetMs()` 提供统一校准偏移入口；正式校准流程、设备档案和存档尚待曲目接入时确定。
 
 ## BuildaGame 接入
 

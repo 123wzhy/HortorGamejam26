@@ -19,7 +19,8 @@ import {
 import {
     GroupDanceFlow,
     GroupDanceSegment,
-    GroupDanceTransition
+    GroupDanceTransition,
+    SettlementFlow
 } from "../gameplay/GroupDanceFlow";
 import { GroupNoteStatus, EngineAction, SequenceEngine } from "../gameplay/SequenceEngine";
 import { DEFAULT_JUDGE_WINDOWS, JudgeGrade, JudgeSystem } from "../gameplay/JudgeSystem";
@@ -151,6 +152,7 @@ export default class GameBootstrap extends cc.Component {
         this.activeSession.groupCount,
         this.activeSession.danceDurationMs
     );
+    private readonly settlementFlow: SettlementFlow = new SettlementFlow();
     private readonly leaderboard: LocalLeaderboard = new LocalLeaderboard(browserLocalLeaderboardStorage());
     private songDurationMs: number = this.activeSession.songDurationMs;
     private input: InputRouter | null = null;
@@ -192,6 +194,16 @@ export default class GameBootstrap extends cc.Component {
     private infoPanel: cc.Graphics = null;
     private infoTitle: cc.Label = null;
     private infoBody: cc.Label = null;
+    private settlementRoot: cc.Node = null;
+    private settlementBackdrop: cc.Graphics = null;
+    private settlementPanel: SlicedPanelView = null;
+    private settlementStatusLabel: cc.Label = null;
+    private settlementSongLabel: cc.Label = null;
+    private settlementScoreCaptionLabel: cc.Label = null;
+    private settlementScoreLabel: cc.Label = null;
+    private settlementDetailsLabel: cc.Label = null;
+    private settlementCountdownLabel: cc.Label = null;
+    private settlementHomeButton: cc.Node = null;
     private stage: cc.Graphics = null;
     private dancerNode: cc.Node = null;
     private dancerFallback: cc.Graphics = null;
@@ -340,6 +352,7 @@ export default class GameBootstrap extends cc.Component {
         });
         this.applySlicedPanelFrame(this.menuHintPanel, this.art.get("stonePanel"));
         this.applySlicedPanelFrame(this.timingPanel, this.art.get("stonePanel"));
+        this.applySlicedPanelFrame(this.settlementPanel, this.art.get("stonePanel"));
         this.applyArtworkFrame(this.menuTaskArtwork, this.art.get("todayTaskPanel"));
         this.applyArtworkFrame(this.menuSongArtwork, this.art.get("songSelectPanel"));
         this.bindSongRowBackgroundFrames();
@@ -402,8 +415,11 @@ export default class GameBootstrap extends cc.Component {
             this.updateDanceInterlude(deltaSeconds);
             return;
         }
-        if (danceSnapshot.phase === "result"
-            || !this.clock.isStarted() || this.clock.isPaused()) {
+        if (danceSnapshot.phase === "result") {
+            this.updateSettlementSequence(deltaSeconds);
+            return;
+        }
+        if (!this.clock.isStarted() || this.clock.isPaused()) {
             return;
         }
 
@@ -731,6 +747,80 @@ export default class GameBootstrap extends cc.Component {
         closeButton.setPosition(0, -126);
         this.infoOverlay.active = false;
 
+        this.settlementRoot = new cc.Node("SettlementOverlay");
+        this.settlementRoot.parent = this.root;
+        this.assignRenderGroup(this.settlementRoot, hudGroupIndex);
+        this.settlementRoot.addComponent(cc.BlockInputEvents);
+        const settlementBackdropNode = new cc.Node("Backdrop");
+        settlementBackdropNode.parent = this.settlementRoot;
+        this.settlementBackdrop = settlementBackdropNode.addComponent(cc.Graphics);
+        this.settlementPanel = this.makeSlicedPanel(
+            this.settlementRoot,
+            "SettlementPanel",
+            this.art.get("stonePanel")
+        );
+        this.settlementStatusLabel = this.makeLabel(
+            this.settlementPanel.node,
+            "Status",
+            "演出成功",
+            34,
+            cc.color(142, 242, 151)
+        );
+        this.settlementSongLabel = this.makeLabel(
+            this.settlementPanel.node,
+            "Song",
+            "NEON GRID",
+            17,
+            cc.color(255, 224, 139)
+        );
+        this.settlementScoreCaptionLabel = this.makeLabel(
+            this.settlementPanel.node,
+            "ScoreCaption",
+            "本次得分",
+            17,
+            cc.color(238, 220, 183)
+        );
+        this.settlementScoreLabel = this.makeLabel(
+            this.settlementPanel.node,
+            "Score",
+            "000000",
+            52,
+            cc.color(255, 248, 225)
+        );
+        this.settlementDetailsLabel = this.makeLabel(
+            this.settlementPanel.node,
+            "Details",
+            "最高连击 0 · 及格线 0\n已结算 0 / 0",
+            19,
+            cc.color(255, 239, 204)
+        );
+        this.settlementCountdownLabel = this.makeLabel(
+            this.settlementPanel.node,
+            "Countdown",
+            "5 秒后返回主菜单",
+            17,
+            cc.color(255, 207, 82)
+        );
+        this.settlementHomeButton = this.makeTapButton(
+            this.settlementPanel.node,
+            "SettlementHomeButton",
+            "立即返回主菜单",
+            190,
+            44,
+            cc.color(32, 27, 19, 245),
+            cc.color(255, 183, 55),
+            () => this.showMenu()
+        );
+        [
+            this.settlementStatusLabel,
+            this.settlementSongLabel,
+            this.settlementScoreCaptionLabel,
+            this.settlementScoreLabel,
+            this.settlementDetailsLabel,
+            this.settlementCountdownLabel
+        ].forEach((label) => this.addReadableOutline(label, 2));
+        this.settlementRoot.active = false;
+
         this.orientationGuard = new cc.Node("LandscapeOrientationGuard");
         this.orientationGuard.parent = this.root;
         this.assignRenderGroup(this.orientationGuard, hudGroupIndex);
@@ -790,6 +880,7 @@ export default class GameBootstrap extends cc.Component {
         this.layoutBackground();
         this.layoutMenu(contentWidth, contentCenterX, compactMenu);
         this.layoutInfoOverlay();
+        this.layoutSettlementOverlay();
         this.layoutOrientationGuard(showOrientationGuard);
         this.drawStage();
         this.drawGroupPanel();
@@ -1464,6 +1555,50 @@ export default class GameBootstrap extends cc.Component {
         }
     }
 
+    private layoutSettlementOverlay(): void {
+        if (!this.settlementRoot || !this.settlementPanel) {
+            return;
+        }
+        this.settlementRoot.setContentSize(this.viewportWidth, this.viewportHeight);
+        this.settlementBackdrop.clear();
+        this.settlementBackdrop.fillColor = cc.color(0, 0, 0, 210);
+        this.settlementBackdrop.rect(
+            -this.viewportWidth * 0.5,
+            -this.viewportHeight * 0.5,
+            this.viewportWidth,
+            this.viewportHeight
+        );
+        this.settlementBackdrop.fill();
+
+        const safeWidth = Math.max(
+            420,
+            this.viewportWidth - this.metrics.safe.left - this.metrics.safe.right
+        );
+        const safeHeight = Math.max(
+            350,
+            this.viewportHeight - this.metrics.safe.top - this.metrics.safe.bottom
+        );
+        const panelWidth = Math.max(420, Math.min(700, safeWidth - 64));
+        const panelHeight = Math.max(330, Math.min(400, safeHeight - 48));
+        const centerX = (this.metrics.safe.left - this.metrics.safe.right) * 0.5;
+        const centerY = (this.metrics.safe.bottom - this.metrics.safe.top) * 0.5;
+        this.layoutSlicedPanel(this.settlementPanel, panelWidth, panelHeight);
+        this.settlementPanel.node.setPosition(centerX, centerY);
+
+        const labelWidth = panelWidth - 80;
+        const setLabelLayout = (label: cc.Label, y: number, height: number): void => {
+            label.node.setContentSize(labelWidth, height);
+            label.node.setPosition(0, y);
+        };
+        setLabelLayout(this.settlementStatusLabel, panelHeight * 0.38, 50);
+        setLabelLayout(this.settlementSongLabel, panelHeight * 0.27, 28);
+        setLabelLayout(this.settlementScoreCaptionLabel, panelHeight * 0.16, 28);
+        setLabelLayout(this.settlementScoreLabel, panelHeight * 0.01, 70);
+        setLabelLayout(this.settlementDetailsLabel, -panelHeight * 0.20, 58);
+        setLabelLayout(this.settlementCountdownLabel, -panelHeight * 0.32, 32);
+        this.settlementHomeButton.setPosition(0, -panelHeight * 0.43);
+    }
+
     private startGame(): void {
         if (!canEnterGameplay(this.startupState)) {
             this.refreshStartupStatus();
@@ -1510,6 +1645,8 @@ export default class GameBootstrap extends cc.Component {
 
     private activateGameplayRun(song: SongDefinition, enterGameplay: boolean): void {
         this.activeSong = song;
+        this.settlementFlow.reset();
+        this.hideSettlementSummary();
         if (enterGameplay) {
             this.hideInfo();
             this.menuRoot.active = false;
@@ -1554,6 +1691,7 @@ export default class GameBootstrap extends cc.Component {
             this.input.resetPressed();
         }
         this.danceFlow.reset();
+        this.settlementFlow.reset();
         this.restartAfterHostResume = false;
         this.heldGroupIndex = -1;
         this.gameplayActive = false;
@@ -1565,6 +1703,7 @@ export default class GameBootstrap extends cc.Component {
         this.gameRoot.active = false;
         this.menuRoot.active = true;
         this.hideInfo();
+        this.hideSettlementSummary();
         this.refreshMenuSummary();
         this.refreshSongRows();
         console.info("[GameBootstrap] screen=menu");
@@ -1657,7 +1796,9 @@ export default class GameBootstrap extends cc.Component {
         if (!this.dancerNode) {
             return;
         }
-        this.dancerNode.active = this.stageVisible && (!this.infoOverlay || !this.infoOverlay.active);
+        this.dancerNode.active = this.stageVisible
+            && (!this.infoOverlay || !this.infoOverlay.active)
+            && (!this.settlementRoot || !this.settlementRoot.active);
     }
 
     private restartGame(): void {
@@ -1665,6 +1806,8 @@ export default class GameBootstrap extends cc.Component {
             || this.gameplayStartPending || this.hostSuspended) {
             return;
         }
+        this.settlementFlow.reset();
+        this.hideSettlementSummary();
         this.danceFlow.reset();
         this.setGroupInputUiVisible(false);
         this.requestGameplayStart(this.activeSong, false);
@@ -1816,16 +1959,79 @@ export default class GameBootstrap extends cc.Component {
             snapshot.score
         );
         this.recordCompletedRun();
-        this.lastResultText = (this.currentOutcome.passed ? "成功 / PASS" : "失败 / FAIL")
-            + " · 得分 " + this.currentOutcome.score + " · 及格 " + this.currentOutcome.passingScore;
+        const settlement = this.settlementFlow.begin(this.currentOutcome.resultDurationMs);
+        this.lastResultText = this.currentOutcome.passed ? "成功 / PASS" : "失败 / FAIL";
         this.lastResultColor = this.outcomeColor(this.currentOutcome);
         this.restoreLastResult();
-        this.instructionLabel.string = this.resultInstruction(this.currentOutcome);
+        this.instructionLabel.string = this.resultPerformanceInstruction(settlement.remainingMs);
         if (this.dancerController) {
             this.dancerController.setResult(this.currentOutcome.passed, true);
         }
         this.updateGlobalTimeline(songTimeMs);
         this.refreshStats();
+    }
+
+    private updateSettlementSequence(deltaSeconds: number): void {
+        const transition = this.settlementFlow.update(Math.max(0, deltaSeconds) * 1000);
+        const settlement = this.settlementFlow.getSnapshot();
+        if (transition && transition.kind === "show-summary") {
+            this.showSettlementSummary();
+            return;
+        }
+        if (transition && transition.kind === "return-menu") {
+            this.showMenu();
+            return;
+        }
+        if (settlement.phase === "performance") {
+            this.instructionLabel.string = this.resultPerformanceInstruction(settlement.remainingMs);
+        } else if (settlement.phase === "summary") {
+            this.refreshSettlementCountdown(settlement.remainingMs);
+        }
+    }
+
+    private showSettlementSummary(): void {
+        if (!this.currentOutcome || !this.settlementRoot) {
+            this.showMenu();
+            return;
+        }
+        const snapshot = this.engine.getSnapshot();
+        this.settlementStatusLabel.string = this.currentOutcome.passed ? "演出成功" : "未达及格线";
+        this.settlementStatusLabel.node.color = this.outcomeColor(this.currentOutcome);
+        this.settlementSongLabel.string = this.activeSession.title.replace(
+            /\s*\/\s*ORIGINAL DEMO$/i,
+            ""
+        );
+        this.settlementScoreLabel.string = this.padScore(this.currentOutcome.score);
+        this.settlementDetailsLabel.string = "最高连击 " + snapshot.maxCombo
+            + " · 及格线 " + this.currentOutcome.passingScore
+            + "\n已结算 " + snapshot.settledNoteCount + " / " + snapshot.totalNoteCount;
+        this.refreshSettlementCountdown(this.settlementFlow.getSnapshot().remainingMs);
+        this.settlementRoot.active = true;
+        const orientationActive = !!(this.orientationGuard && this.orientationGuard.active);
+        this.settlementRoot.setSiblingIndex(Math.max(
+            0,
+            this.root.childrenCount - (orientationActive ? 2 : 1)
+        ));
+        this.refreshDancerVisibility();
+        console.info(
+            "[GameBootstrap] screen=settlement score=" + this.currentOutcome.score
+            + " passed=" + this.currentOutcome.passed
+        );
+    }
+
+    private hideSettlementSummary(): void {
+        if (this.settlementRoot) {
+            this.settlementRoot.active = false;
+        }
+        this.refreshDancerVisibility();
+    }
+
+    private refreshSettlementCountdown(remainingMs: number): void {
+        if (!this.settlementCountdownLabel) {
+            return;
+        }
+        const seconds = Math.max(1, Math.ceil(Math.max(0, remainingMs) / 1000));
+        this.settlementCountdownLabel.string = seconds + " 秒后返回主菜单";
     }
 
     private recordCompletedRun(): void {
@@ -1865,15 +2071,12 @@ export default class GameBootstrap extends cc.Component {
             + "s 后" + destination;
     }
 
-    private resultInstruction(outcome: SongOutcome): string {
-        const status = outcome.passed ? "成功 / PASS" : "失败 / FAIL";
-        return status + " · 得分 " + outcome.score + " / " + outcome.maximumScore
-            + " · 及格线 " + outcome.passingScore + " · 点击重新开始或按 R";
+    private resultPerformanceInstruction(remainingMs: number): string {
+        return "结算演出 · " + Math.max(0, remainingMs / 1000).toFixed(1) + "s 后展示成绩";
     }
 
-    private resultProgressText(outcome: SongOutcome): string {
-        return "谱面 100% · " + (outcome.passed ? "成功" : "失败")
-            + " · 得分 " + outcome.score + " · 及格线 " + outcome.passingScore;
+    private resultProgressText(): string {
+        return "谱面 100% · 结算演出中";
     }
 
     private setGroupInputUiVisible(visible: boolean): void {
@@ -2092,12 +2295,7 @@ export default class GameBootstrap extends cc.Component {
         this.globalTimeline.fill();
 
         if (presentationFinished) {
-            const outcome = this.currentOutcome || resolveSongOutcome(
-                this.activeSong,
-                this.activeSession.animationProfile,
-                snapshot.score
-            );
-            this.progressLabel.string = this.resultProgressText(outcome);
+            this.progressLabel.string = this.resultProgressText();
             this.progressLabel.node.color = feedbackColor;
         } else if (currentNote) {
             const remainingMs = currentNote.targetTimeMs - songTimeMs;
@@ -2635,13 +2833,14 @@ export default class GameBootstrap extends cc.Component {
         if (flow.phase === "dance" && flow.segment) {
             this.instructionLabel.string = this.danceInstruction(flow.segment);
         } else if (flow.phase === "result") {
-            const snapshot = this.engine.getSnapshot();
-            const outcome = this.currentOutcome || resolveSongOutcome(
-                this.activeSong,
-                this.activeSession.animationProfile,
-                snapshot.score
-            );
-            this.instructionLabel.string = this.resultInstruction(outcome);
+            const settlement = this.settlementFlow.getSnapshot();
+            if (settlement.phase === "performance") {
+                this.instructionLabel.string = this.resultPerformanceInstruction(
+                    settlement.remainingMs
+                );
+            } else {
+                this.instructionLabel.string = "成绩结算";
+            }
         } else if (this.gameplayActive) {
             this.instructionLabel.string = "方向键 / WASD · 在箭头目标时刻输入";
         }

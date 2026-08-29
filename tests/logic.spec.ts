@@ -23,7 +23,9 @@ import {
 } from "../assets/scripts/domain/SongCatalog";
 import {
     DANCE_COMBO_DURATION_MS,
-    GroupDanceFlow
+    GroupDanceFlow,
+    SETTLEMENT_DISPLAY_DURATION_MS,
+    SettlementFlow
 } from "../assets/scripts/gameplay/GroupDanceFlow";
 import { DEFAULT_JUDGE_WINDOWS, JudgeSystem } from "../assets/scripts/gameplay/JudgeSystem";
 import { EngineAction, SequenceEngine } from "../assets/scripts/gameplay/SequenceEngine";
@@ -486,10 +488,72 @@ function testSongOutcomeBoundaries(): void {
             equal(boundary.passed, true, label + " passes exactly on the line");
             equal(boundary.resultClip, profile.successResultClip, label + " uses its paired success pose");
             equal(boundary.animationProfileId, profile.id, label + " outcome retains the session profile");
+            near(
+                boundary.resultDurationMs,
+                profile.id === "A" ? 12458.333015441895 : 18791.66603088379,
+                0.000001,
+                label + " settlement waits for the selected success pose"
+            );
+            near(
+                below.resultDurationMs,
+                3833.3332538604736,
+                0.000001,
+                label + " settlement waits for the shared failure pose"
+            );
             equal(perfect.passed, true, label + " perfect score passes");
             equal(perfect.score, maximum, label + " perfect result keeps the actual score");
         });
     });
+}
+
+function testSettlementFlow(): void {
+    const performanceDurationMs = 12458.333015441895;
+    const flow = new SettlementFlow();
+    equal(flow.getSnapshot().phase, "idle", "Settlement starts idle");
+
+    const started = flow.begin(performanceDurationMs);
+    equal(started.phase, "performance", "A completed chart starts the result performance");
+    near(
+        started.remainingMs,
+        performanceDurationMs,
+        0.000001,
+        "The result performance exposes its full clip duration"
+    );
+    equal(
+        flow.update(performanceDurationMs - 0.01),
+        null,
+        "The summary stays hidden until the result pose finishes"
+    );
+    const showSummary = flow.update(0.01);
+    equal(showSummary && showSummary.kind, "show-summary", "The result pose opens the settlement card");
+    equal(flow.getSnapshot().phase, "summary", "Settlement enters the readable summary phase");
+    equal(
+        flow.getSnapshot().remainingMs,
+        SETTLEMENT_DISPLAY_DURATION_MS,
+        "The summary receives its complete five-second display window"
+    );
+    equal(
+        flow.update(SETTLEMENT_DISPLAY_DURATION_MS - 1),
+        null,
+        "The menu does not return before the countdown completes"
+    );
+    const returnMenu = flow.update(1);
+    equal(returnMenu && returnMenu.kind, "return-menu", "The completed countdown returns to the menu");
+    equal(flow.getSnapshot().phase, "complete", "Settlement completes after requesting the menu");
+
+    flow.reset();
+    flow.begin(1000);
+    const stalledFrame = flow.update(100000);
+    equal(
+        stalledFrame && stalledFrame.kind,
+        "show-summary",
+        "A large frame advances only to the summary boundary"
+    );
+    equal(
+        flow.getSnapshot().remainingMs,
+        SETTLEMENT_DISPLAY_DURATION_MS,
+        "A stalled frame cannot skip the readable settlement card"
+    );
 }
 
 class RecordingPreviewAudio implements SongPreviewAudioPort {
@@ -1661,6 +1725,7 @@ async function run(): Promise<void> {
     testSongSessionConfigurations();
     testEverySongDanceFlowCoverage();
     testSongOutcomeBoundaries();
+    testSettlementFlow();
     testTooEarlyAndWrongDirectionBoundary();
     testPerNoteScoresComboAndGroupAdvance();
     testOnlyEarliestNoteCanSettle();
@@ -1690,7 +1755,7 @@ async function run(): Promise<void> {
     await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
     await testSongPreviewControllerSerialization();
-    console.log("logic-tests=passed cases=36");
+    console.log("logic-tests=passed cases=37");
 }
 
 run().catch((error) => {
