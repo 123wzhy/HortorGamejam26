@@ -70,7 +70,7 @@ COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 
 玩法 HUD 在结果动作期间只显示短状态和演出倒计时，不再把完整结算句叠到顶部分数上；动作结束后的独立成绩卡显示成功/失败、实际得分、最高连击、及格线和结算数量。无论成败，只要完整走完最终舞段就恰好写入一次本地榜，中途回主页或切歌不会入榜。
 
-每首进入玩法时都使用选曲页对应的同一份 MP3，并设置 `loop=false`。试听使用 `loop=true`。播放、停止、快速切歌、返回和重新开始都经过同一串行音频控制器：关卡时钟尽量在宿主 `playBGM()` Promise 完成的边界启动；宿主音频不可用或拒绝时仍启动单调 fallback 时钟。重新开始会从头请求同一首 BGM；返回主页与最终结算会停止 BGM；过期的异步播放完成后会被再次停止，避免旧请求泄漏。
+每首进入玩法时都使用选曲页对应的同一份 MP3，并设置 `loop=false`。试听使用 `loop=true`。播放、停止、快速切歌、返回和重新开始都经过同一串行音频控制器：完整的 Builda 音频接口存在时只走宿主；SDK 脚本未载入或宿主音频接口不完整时，改用单实例浏览器 `Audio` BGM，并优先经 `Builda.assets.url()` 解析资源，否则按页面相对路径解析。关卡时钟尽量在 `playBGM()` Promise 完成的边界启动；音频不可用或拒绝时仍启动单调 fallback 时钟。重新开始会从头请求同一首 BGM；返回主页与最终结算会停止 BGM；过期的异步播放完成后会被再次停止，避免旧请求泄漏和双播。
 
 宿主切后台会冻结流程、舞者和 `SongClock`；正常播放由宿主生命周期暂停/恢复。若后台发生在 pending start，恢复后会从头重建该局，避免用不确定的音频位置继续。快速返回或切歌会使旧请求失效，不会把界面带回已取消的关卡。
 
@@ -141,7 +141,7 @@ assets/scripts/
 ./.builda-agent/builda dev --web build/web-mobile --safearea 44,0,34,0
 ```
 
-`BuildaAdapter.viewportMetrics()` 按 CSS 视口与 Cocos 可见设计尺寸的比例换算 `safeArea()` 和 `capsuleMenuRect()`。`playBGM / stopBGM / playSFX` 只有在 SDK Result 的 `ok` 为 `true` 时才报告成功；普通浏览器没有 Builda host 时安全降级。
+`BuildaAdapter.viewportMetrics()` 按 CSS 视口与 Cocos 可见设计尺寸的比例换算 `safeArea()` 和 `capsuleMenuRect()`。完整宿主存在时，`playBGM / stopBGM / playSFX` 只有在 SDK Result 的 `ok` 为 `true` 时才报告成功，且不会与浏览器后备通道双播；普通浏览器或不完整宿主使用原生 `Audio` 兜底 BGM，保持试听/玩法的循环和音量差异，`playSFX` 仍只走宿主接口。
 
 发布模板在 `build-templates/web-mobile/`，会在 `<head>` 最早加载 `mobile-perf.js` 和 `builda-sdk.js`。正式 zip 只保留根路径 SDK 引用，不包含 SDK JS 本体；本地 `builda dev` 从 `.builda-agent/sdk/web/` 提供 mock。Creator release 构建固定 `mainIsRemote=false`、`sourceMaps=false`、`debug=false`、`md5Cache=false` 与 `webOrientation=landscape`。
 
@@ -151,6 +151,7 @@ assets/scripts/
 
 - BPM/offset 是对每首音频前 120 秒的离线主拍估计。宿主 BGM API 不提供播放位置，长时漂移、解码启动延迟与设备输出延迟无法由运行时反查；当前谱面约 55 秒结束并预留组间空档，但仍需真机试听验收。
 - `SongClock.setCalibrationOffsetMs()` 已提供统一校准入口，玩家校准 UI、设备默认值和持久化策略尚未接入。
+- 无 Builda 音频接口时的浏览器 `Audio` 后备仍受浏览器用户手势和 autoplay 策略约束；播放拒绝会释放实例并在选曲页显示不可用，不增加与真机宿主语义冲突的“声音解锁”遮罩。
 - 音乐已接入关卡，判定 SFX 尚未接入；静音继续由 Builda 平台统一设置管理。
 - 排行榜按浏览器/设备隔离，不跨设备或账号同步；清理站点数据会清空记录。
 - 真机 Builda App 的宿主音频、真实安全区和生命周期仍需在待发布草稿中最终验收；本仓库不会在本任务中上传或发布。

@@ -1556,12 +1556,214 @@ function testSongClockCalibrationAndPause(): void {
     equal(clock.currentTimeMs(), 20, "Stopped fallback clock preserves only calibration");
 }
 
+type BrowserAudioPlayBehavior = () => Promise<void> | void;
+
+const browserAudioInstances: BrowserAudioFixture[] = [];
+const browserAudioPlayBehaviors: BrowserAudioPlayBehavior[] = [];
+
+class BrowserAudioFixture {
+    public src: string;
+    public preload: string = "";
+    public loop: boolean = false;
+    public volume: number = 1;
+    public currentTime: number = 0;
+    public onerror: (() => void) | null = null;
+    public onended: (() => void) | null = null;
+    public playCount: number = 0;
+    public pauseCount: number = 0;
+    public loadCount: number = 0;
+
+    public constructor(src: string = "") {
+        this.src = src;
+        browserAudioInstances.push(this);
+    }
+
+    public play(): Promise<void> | void {
+        this.playCount += 1;
+        const behavior = browserAudioPlayBehaviors.shift();
+        return behavior ? behavior() : Promise.resolve();
+    }
+
+    public pause(): void {
+        this.pauseCount += 1;
+    }
+
+    public removeAttribute(name: string): void {
+        if (name === "src") {
+            this.src = "";
+        }
+    }
+
+    public load(): void {
+        this.loadCount += 1;
+    }
+}
+
+function resetBrowserAudioFixture(): void {
+    browserAudioInstances.length = 0;
+    browserAudioPlayBehaviors.length = 0;
+}
+
+async function testBuildaBrowserBgmFallback(): Promise<void> {
+    const hadWindow = Object.prototype.hasOwnProperty.call(global, "window");
+    const previousWindow = global.window;
+    const hadDocument = Object.prototype.hasOwnProperty.call(global, "document");
+    const previousDocument = global.document;
+    const previousWarn = console.warn;
+    const warnings: string[] = [];
+    try {
+        console.warn = (...args: any[]): void => {
+            warnings.push(args.map((value) => String(value)).join(" "));
+        };
+        resetBrowserAudioFixture();
+        global.document = { baseURI: "https://preview.example/games/rhythm/index.html" };
+        global.window = {
+            Audio: BrowserAudioFixture,
+            location: { href: "https://preview.example/games/rhythm/index.html" }
+        };
+
+        const adapter = new BuildaAdapter();
+        equal(
+            await adapter.playBGM("audio/bgm/preview.mp3", true, 0.78),
+            true,
+            "A missing Builda audio host falls back to browser Audio for previews"
+        );
+        equal(browserAudioInstances.length, 1, "The first fallback play creates one browser BGM instance");
+        equal(
+            browserAudioInstances[0].src,
+            "https://preview.example/games/rhythm/audio/bgm/preview.mp3",
+            "The fallback resolves a hostless relative asset path against the page"
+        );
+        equal(browserAudioInstances[0].loop, true, "Preview fallback playback keeps loop=true");
+        equal(browserAudioInstances[0].volume, 0.78, "Preview fallback playback keeps catalog volume");
+
+        equal(
+            await adapter.playBGM("audio/bgm/gameplay.mp3", false, 0.86),
+            true,
+            "Gameplay reuses the same fallback BGM port"
+        );
+        equal(browserAudioInstances.length, 2, "Switching tracks replaces rather than layers browser audio");
+        equal(browserAudioInstances[0].pauseCount > 0, true, "Switching tracks pauses the previous fallback");
+        equal(browserAudioInstances[1].loop, false, "Gameplay fallback playback keeps loop=false");
+        equal(browserAudioInstances[1].volume, 0.86, "Gameplay fallback playback keeps catalog volume");
+        equal(await adapter.stopBGM(), true, "Fallback stop succeeds for the active browser BGM");
+        equal(browserAudioInstances[1].pauseCount > 0, true, "Fallback stop pauses the active instance");
+        equal(await adapter.stopBGM(), true, "Fallback stop is idempotent after the BGM is clear");
+
+        resetBrowserAudioFixture();
+        let partialHostPlayCalls = 0;
+        global.window.Builda = {
+            audio: {
+                playBGM: () => {
+                    partialHostPlayCalls += 1;
+                    return Promise.resolve({ ok: true, data: { available: true } });
+                }
+            },
+            assets: {
+                url: (path: string) => "https://assets.example/v42/" + path
+            }
+        };
+        const assetAdapter = new BuildaAdapter();
+        equal(
+            await assetAdapter.playBGM("audio/bgm/host-assets.mp3", true, 0.5),
+            true,
+            "A Builda object without the complete audio interface still uses the browser fallback"
+        );
+        equal(
+            browserAudioInstances[0].src,
+            "https://assets.example/v42/audio/bgm/host-assets.mp3",
+            "The browser fallback prefers Builda.assets.url when it is available"
+        );
+        equal(partialHostPlayCalls, 0, "An incomplete host BGM pair is never used without a matching stop method");
+        await assetAdapter.stopBGM();
+
+        resetBrowserAudioFixture();
+        let resolveStalePlay: () => void = () => undefined;
+        let resolveLatestPlay: () => void = () => undefined;
+        browserAudioPlayBehaviors.push(
+            () => new Promise<void>((resolve) => { resolveStalePlay = resolve; }),
+            () => new Promise<void>((resolve) => { resolveLatestPlay = resolve; })
+        );
+        delete global.window.Builda;
+        const switchingAdapter = new BuildaAdapter();
+        const stalePlay = switchingAdapter.playBGM("audio/bgm/stale.mp3", true, 0.6);
+        const latestPlay = switchingAdapter.playBGM("audio/bgm/latest.mp3", false, 0.7);
+        resolveLatestPlay();
+        equal(await latestPlay, true, "The latest fallback request owns the browser BGM channel");
+        resolveStalePlay();
+        equal(await stalePlay, false, "A late stale play completion cannot reclaim the BGM channel");
+        equal(browserAudioInstances[0].pauseCount > 0, true, "A superseded pending Audio instance is stopped");
+        equal(browserAudioInstances[1].pauseCount, 0, "A stale completion cannot stop the latest track");
+        await switchingAdapter.stopBGM();
+
+        resetBrowserAudioFixture();
+        let resolveCancelledPlay: () => void = () => undefined;
+        browserAudioPlayBehaviors.push(
+            () => new Promise<void>((resolve) => { resolveCancelledPlay = resolve; })
+        );
+        const cancelledAdapter = new BuildaAdapter();
+        const cancelledPlay = cancelledAdapter.playBGM("audio/bgm/cancelled.mp3", true, 0.5);
+        equal(await cancelledAdapter.stopBGM(), true, "Stop invalidates an in-flight fallback start");
+        resolveCancelledPlay();
+        equal(await cancelledPlay, false, "A stopped fallback cannot become current after play resolves late");
+        equal(browserAudioInstances[0].pauseCount > 0, true, "Stopping a pending fallback releases its instance");
+
+        resetBrowserAudioFixture();
+        browserAudioPlayBehaviors.push(() => Promise.reject(new Error("autoplay blocked")));
+        const rejectedAdapter = new BuildaAdapter();
+        equal(
+            await rejectedAdapter.playBGM("audio/bgm/rejected.mp3", true, 0.5),
+            false,
+            "A rejected browser Audio.play Promise remains visible as unavailable"
+        );
+        equal(browserAudioInstances[0].pauseCount > 0, true, "A rejected fallback play releases its media instance");
+        equal(warnings.some((warning) => warning.indexOf("browser BGM play failed") >= 0), true,
+            "A current fallback rejection emits one diagnostic warning");
+
+        resetBrowserAudioFixture();
+        browserAudioPlayBehaviors.push(() => {
+            throw new Error("synchronous play failure");
+        });
+        equal(
+            await new BuildaAdapter().playBGM("audio/bgm/thrown.mp3", true, 0.5),
+            false,
+            "A synchronous browser Audio.play throw is contained"
+        );
+        equal(browserAudioInstances[0].pauseCount > 0, true, "A synchronously thrown play releases its instance");
+        equal(warnings.some((warning) => warning.indexOf("browser BGM threw") >= 0), true,
+            "A synchronous browser Audio failure emits one diagnostic warning");
+
+        resetBrowserAudioFixture();
+        global.window = { location: { href: "https://preview.example/index.html" } };
+        equal(
+            await new BuildaAdapter().playBGM("audio/bgm/unavailable.mp3", true, 1),
+            false,
+            "A browser without an Audio constructor reports fallback playback unavailable"
+        );
+    } finally {
+        console.warn = previousWarn;
+        if (hadDocument) {
+            global.document = previousDocument;
+        } else {
+            delete global.document;
+        }
+        if (hadWindow) {
+            global.window = previousWindow;
+        } else {
+            delete global.window;
+        }
+        resetBrowserAudioFixture();
+    }
+}
+
 async function testBuildaAudioResultMapping(): Promise<void> {
     const hadWindow = Object.prototype.hasOwnProperty.call(global, "window");
     const previousWindow = global.window;
     let capturedSfxOptions: any = null;
     try {
+        resetBrowserAudioFixture();
         global.window = {
+            Audio: BrowserAudioFixture,
             Builda: {
                 audio: {
                     playBGM: () => Promise.resolve({
@@ -1581,6 +1783,7 @@ async function testBuildaAudioResultMapping(): Promise<void> {
         };
         const hostedAdapter = new BuildaAdapter();
         equal(await hostedAdapter.playBGM("audio/bgm/fixture.ogg"), false, "Rejected SDK Result maps to false");
+        equal(browserAudioInstances.length, 0, "A complete Builda audio host never double-plays through fallback Audio");
         equal(await hostedAdapter.stopBGM(), true, "Successful SDK Result maps to true");
         equal(await hostedAdapter.playSFX("audio/sfx/hit.ogg", "combo-hit", 0.5), true, "SFX Result maps to true");
         equal(capturedSfxOptions.sessionId, "combo-hit", "SFX session id uses SDK contract key");
@@ -1754,8 +1957,9 @@ async function run(): Promise<void> {
     testUiStartupRaceAndFallback();
     await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
+    await testBuildaBrowserBgmFallback();
     await testSongPreviewControllerSerialization();
-    console.log("logic-tests=passed cases=37");
+    console.log("logic-tests=passed cases=38");
 }
 
 run().catch((error) => {
