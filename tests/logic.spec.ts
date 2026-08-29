@@ -16,7 +16,9 @@ import {
 } from "../assets/scripts/domain/SongCatalog";
 import {
     DANCE_COMBO_DURATION_MS,
-    GroupDanceFlow
+    GroupDanceFlow,
+    SETTLEMENT_DISPLAY_DURATION_MS,
+    SettlementFlow
 } from "../assets/scripts/gameplay/GroupDanceFlow";
 import { DEFAULT_JUDGE_WINDOWS, JudgeSystem } from "../assets/scripts/gameplay/JudgeSystem";
 import { EngineAction, SequenceEngine } from "../assets/scripts/gameplay/SequenceEngine";
@@ -316,6 +318,7 @@ function testEverySongDanceFlowCoverage(): void {
 
 function testSongOutcomeBoundaries(): void {
     const expectedSuccessClips = ["ResultPose", "ResultPose2"];
+    const expectedSuccessDurations = [12458.333015441895, 18791.66603088379];
     DEMO_SONGS.forEach((song, index) => {
         equal(maximumSongScore(song), 31000, song.id + " maximum follows 31 Perfect notes");
         equal(passingSongScore(song), 18600, song.id + " uses the rounded-up 60% passing line");
@@ -326,9 +329,71 @@ function testSongOutcomeBoundaries(): void {
         equal(below.resultClip, "ResultPose3", song.id + " failure uses the shared pose");
         equal(boundary.passed, true, song.id + " passes exactly on the line");
         equal(boundary.resultClip, expectedSuccessClips[index], song.id + " uses its success pose");
+        near(
+            boundary.resultDurationMs,
+            expectedSuccessDurations[index],
+            0.000001,
+            song.id + " settlement waits for its full success pose"
+        );
+        near(
+            below.resultDurationMs,
+            3833.3332538604736,
+            0.000001,
+            song.id + " settlement waits for the shared failure pose"
+        );
         equal(perfect.passed, true, song.id + " perfect score passes");
         equal(perfect.score, 31000, song.id + " perfect result keeps the actual score");
     });
+}
+
+function testSettlementFlow(): void {
+    const performanceDurationMs = 12458.333015441895;
+    const flow = new SettlementFlow();
+    equal(flow.getSnapshot().phase, "idle", "Settlement starts idle");
+
+    const started = flow.begin(performanceDurationMs);
+    equal(started.phase, "performance", "A completed chart starts the result performance");
+    near(
+        started.remainingMs,
+        performanceDurationMs,
+        0.000001,
+        "The result performance exposes its full clip duration"
+    );
+    equal(
+        flow.update(performanceDurationMs - 0.01),
+        null,
+        "The summary stays hidden until the result pose finishes"
+    );
+    const showSummary = flow.update(0.01);
+    equal(showSummary && showSummary.kind, "show-summary", "The result pose opens the settlement card");
+    equal(flow.getSnapshot().phase, "summary", "Settlement enters the readable summary phase");
+    equal(
+        flow.getSnapshot().remainingMs,
+        SETTLEMENT_DISPLAY_DURATION_MS,
+        "The summary receives its complete five-second display window"
+    );
+    equal(
+        flow.update(SETTLEMENT_DISPLAY_DURATION_MS - 1),
+        null,
+        "The menu does not return before the countdown completes"
+    );
+    const returnMenu = flow.update(1);
+    equal(returnMenu && returnMenu.kind, "return-menu", "The completed countdown returns to the menu");
+    equal(flow.getSnapshot().phase, "complete", "Settlement completes after requesting the menu");
+
+    flow.reset();
+    flow.begin(1000);
+    const stalledFrame = flow.update(100000);
+    equal(
+        stalledFrame && stalledFrame.kind,
+        "show-summary",
+        "A large frame advances only to the summary boundary"
+    );
+    equal(
+        flow.getSnapshot().remainingMs,
+        SETTLEMENT_DISPLAY_DURATION_MS,
+        "A stalled frame cannot skip the readable settlement card"
+    );
 }
 
 class RecordingPreviewAudio implements SongPreviewAudioPort {
@@ -1322,6 +1387,7 @@ async function run(): Promise<void> {
     testSongSessionConfigurations();
     testEverySongDanceFlowCoverage();
     testSongOutcomeBoundaries();
+    testSettlementFlow();
     testTooEarlyAndWrongDirectionBoundary();
     testPerNoteScoresComboAndGroupAdvance();
     testOnlyEarliestNoteCanSettle();
@@ -1350,7 +1416,7 @@ async function run(): Promise<void> {
     await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
     await testSongPreviewControllerSerialization();
-    console.log("logic-tests=passed cases=34");
+    console.log("logic-tests=passed cases=35");
 }
 
 run().catch((error) => {

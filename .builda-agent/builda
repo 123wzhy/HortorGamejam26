@@ -19,7 +19,7 @@ ENV_FILE="$ROOT/publish.env"
 MANIFEST="${BUILDA_MANIFEST:-builda.publish.json}"
 PROJECT_FILE="${BUILDA_PROJECT_FILE:-$PROJECT_STATE_DIR/game.json}"
 LEGACY_PROJECT_FILE="${BUILDA_LEGACY_PROJECT_FILE:-builda.game.json}"
-VERSION="0.4.36"
+VERSION="0.4.37"
 RUNTIME_VERSION_FILE="$ROOT/VERSION"
 SDK_VERSION_FILE="$PROJECT_STATE_DIR/sdk-version"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
@@ -494,8 +494,8 @@ boards = data.get("rankBoards")
 if not isinstance(boards, list):
     print("rankBoards must be an array; omit it to keep existing boards or use [] to clear all boards.", file=sys.stderr)
     raise SystemExit(1)
-if len(boards) > 5:
-    print("rankBoards supports at most 5 boards.", file=sys.stderr)
+if len(boards) > 100:
+    print("rankBoards supports at most 100 boards.", file=sys.stderr)
     raise SystemExit(1)
 required = {"rankId", "displayName", "sortType", "cycleType", "minScore", "maxScore"}
 rank_id_re = re.compile(r"^[A-Za-z0-9_-]{1,64}$")

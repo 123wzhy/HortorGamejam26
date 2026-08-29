@@ -24,6 +24,7 @@ export interface SongOutcome {
     maximumScore: number;
     passingScore: number;
     resultClip: "ResultPose" | "ResultPose2" | "ResultPose3";
+    resultDurationMs: number;
 }
 
 export interface SongSessionConfig {
@@ -40,6 +41,9 @@ export const PERFECT_NOTE_SCORE = 1000;
 export const PASS_PERCENT = 60;
 export const FIRST_DANCE_DURATION_MS = 26791.66603088379;
 export const SECOND_DANCE_DURATION_MS = 20458.33396911621;
+export const FIRST_SUCCESS_RESULT_DURATION_MS = 12458.333015441895;
+export const SECOND_SUCCESS_RESULT_DURATION_MS = 18791.66603088379;
+export const FAILURE_RESULT_DURATION_MS = 3833.3332538604736;
 
 export const DEMO_SONGS: SongDefinition[] = [
     {
@@ -113,15 +117,30 @@ export function resolveSongOutcome(song: SongDefinition, score: number): SongOut
     const maximumScore = maximumSongScore(song);
     const passingScore = passingSongScore(song);
     const passed = normalizedScore >= passingScore;
+    const resultClip = passed
+        ? song.animation.successResultClip
+        : song.animation.failureResultClip;
     return {
         passed,
         score: normalizedScore,
         maximumScore,
         passingScore,
-        resultClip: passed
-            ? song.animation.successResultClip
-            : song.animation.failureResultClip
+        resultClip,
+        resultDurationMs: resultClipDurationMs(resultClip)
     };
+}
+
+/** Durations are sourced from the imported dancer clip metadata. */
+export function resultClipDurationMs(
+    clip: "ResultPose" | "ResultPose2" | "ResultPose3"
+): number {
+    if (clip === "ResultPose") {
+        return FIRST_SUCCESS_RESULT_DURATION_MS;
+    }
+    if (clip === "ResultPose2") {
+        return SECOND_SUCCESS_RESULT_DURATION_MS;
+    }
+    return FAILURE_RESULT_DURATION_MS;
 }
 
 export function wrappedSongIndex(currentIndex: number, step: number): number {
