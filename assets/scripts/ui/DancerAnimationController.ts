@@ -1,4 +1,9 @@
-import { DancerClipName, SongAnimationProfile } from "../domain/SongCatalog";
+import {
+    DancerClipName,
+    isKnownSongAnimationProfile,
+    SONG_ANIMATION_PROFILES,
+    SongAnimationProfile
+} from "../domain/SongCatalog";
 
 export type DancerAnimationState = "idle" | "dance" | "result";
 
@@ -19,16 +24,7 @@ const REQUIRED_CLIPS: DancerClipName[] = [
     "ResultPose2",
     "ResultPose3"
 ];
-const DANCE_CLIPS: DancerClipName[] = ["DanceCombo", "DanceCombo2"];
-const SUCCESS_RESULT_CLIPS: DancerClipName[] = ["ResultPose", "ResultPose2"];
-const FAILURE_RESULT_CLIPS: DancerClipName[] = ["ResultPose3"];
-
-const DEFAULT_ANIMATION_PROFILE: SongAnimationProfile = {
-    danceClip: "DanceCombo",
-    successResultClip: "ResultPose",
-    failureResultClip: "ResultPose3",
-    danceDurationMs: 26791.66603088379
-};
+const DEFAULT_ANIMATION_PROFILE: SongAnimationProfile = SONG_ANIMATION_PROFILES[0];
 
 /**
  * Loads and owns the optional 3D dancer without participating in gameplay
@@ -151,19 +147,20 @@ export class DancerAnimationController {
     }
 
     /**
-     * Selects the clips owned by one song. The default remains the original
-     * DanceCombo / ResultPose pair, so existing callers preserve first-song
-     * behaviour until they explicitly choose another profile.
+     * Selects the matched clips stored in one gameplay run. The profile is
+     * stable until the next run explicitly replaces it.
      */
     public setAnimationProfile(profile: SongAnimationProfile, restart: boolean = false): void {
         if (this.disposed || !this.isValidProfile(profile)) {
             return;
         }
-        const changed = this.animationProfile.danceClip !== profile.danceClip
+        const changed = this.animationProfile.id !== profile.id
+            || this.animationProfile.danceClip !== profile.danceClip
             || this.animationProfile.successResultClip !== profile.successResultClip
             || this.animationProfile.failureResultClip !== profile.failureResultClip
             || this.animationProfile.danceDurationMs !== profile.danceDurationMs;
         this.animationProfile = {
+            id: profile.id,
             danceClip: profile.danceClip,
             successResultClip: profile.successResultClip,
             failureResultClip: profile.failureResultClip,
@@ -709,10 +706,7 @@ export class DancerAnimationController {
     }
 
     private isValidProfile(profile: SongAnimationProfile): boolean {
-        if (!profile || DANCE_CLIPS.indexOf(profile.danceClip) < 0
-            || SUCCESS_RESULT_CLIPS.indexOf(profile.successResultClip) < 0
-            || FAILURE_RESULT_CLIPS.indexOf(profile.failureResultClip) < 0
-            || !isFinite(profile.danceDurationMs) || profile.danceDurationMs <= 0) {
+        if (!isKnownSongAnimationProfile(profile)) {
             console.warn("[DancerAnimationController] invalid song animation profile ignored");
             return false;
         }

@@ -7,8 +7,15 @@ import {
 } from "../assets/scripts/domain/LocalLeaderboard";
 import {
     beatmapNoteCount,
+    createSongRunSessionConfig,
     createSongSessionConfig,
+    FIRST_DANCE_DURATION_MS,
+    isKnownSongAnimationProfile,
     SONG_CATALOG,
+    SONG_ANIMATION_PROFILES,
+    SECOND_DANCE_DURATION_MS,
+    selectSongAnimationProfile,
+    SongAnimationProfile,
     maximumSongScore,
     passingSongScore,
     resolveSongOutcome,
@@ -61,6 +68,16 @@ function near(actual: number, expected: number, tolerance: number, message: stri
     if (Math.abs(actual - expected) > tolerance) {
         throw new Error(message + " (expected near " + expected + ", got " + actual + ")");
     }
+}
+
+function throws(action: () => void, message: string): void {
+    let threw = false;
+    try {
+        action();
+    } catch (_error) {
+        threw = true;
+    }
+    equal(threw, true, message);
 }
 
 class MemoryLeaderboardStorage implements LocalLeaderboardStorage {
@@ -194,12 +211,15 @@ function testSongGridAndGroups(): void {
                 const previous = beatmap.groups[groupIndex - 1];
                 const gap = group.notes[0].targetTimeMs
                     - previous.notes[previous.notes.length - 1].targetTimeMs;
-                const danceSegmentMs = song.animation.danceDurationMs / beatmap.groups.length;
-                equal(
-                    gap >= danceSegmentMs + DEFAULT_JUDGE_WINDOWS.badMs * 2,
-                    true,
-                    group.id + " preserves the dance segment and both Bad-window margins"
-                );
+                SONG_ANIMATION_PROFILES.forEach((profile) => {
+                    const danceSegmentMs = profile.danceDurationMs / beatmap.groups.length;
+                    equal(
+                        gap >= danceSegmentMs + DEFAULT_JUDGE_WINDOWS.badMs * 2,
+                        true,
+                        song.id + "/" + profile.id
+                            + " preserves the dance segment and both Bad-window margins"
+                    );
+                });
             }
         });
         const firstNote = beatmap.groups[0].notes[0];
@@ -247,19 +267,30 @@ function testSongCatalogAndGeneratedDifficulty(): void {
         "Song rows expose generated note counts instead of design-sample text"
     );
     equal(
-        SONG_CATALOG.map((song) => song.animation.danceClip).join(","),
-        "DanceCombo,DanceCombo2,DanceCombo",
-        "Every song maps to an available dance clip"
+        SONG_CATALOG.every((song) => !Object.prototype.hasOwnProperty.call(song, "animation")),
+        true,
+        "Songs do not own fixed animation profiles"
+    );
+    equal(SONG_ANIMATION_PROFILES.length, 2, "Exactly two complete action groups are available");
+    equal(
+        SONG_ANIMATION_PROFILES.map((profile) => profile.id).join(","),
+        "A,B",
+        "Action groups retain stable ids"
     );
     equal(
-        SONG_CATALOG.map((song) => song.animation.successResultClip).join(","),
-        "ResultPose,ResultPose2,ResultPose",
-        "Every song maps to the success clip paired with its dance"
+        SONG_ANIMATION_PROFILES.map((profile) => profile.danceClip).join(","),
+        "DanceCombo,DanceCombo2",
+        "Action groups expose both dance clips"
     );
     equal(
-        SONG_CATALOG.map((song) => song.animation.failureResultClip).join(","),
-        "ResultPose3,ResultPose3,ResultPose3",
-        "All songs share the failure clip"
+        SONG_ANIMATION_PROFILES.map((profile) => profile.successResultClip).join(","),
+        "ResultPose,ResultPose2",
+        "Each dance remains paired with its matching success pose"
+    );
+    equal(
+        SONG_ANIMATION_PROFILES.every((profile) => profile.failureResultClip === "ResultPose3"),
+        true,
+        "Both action groups share the failure pose"
     );
 
     const analyses = SONG_CATALOG.map((song) => analyzeBeatmapDifficulty(song.beatmap));
@@ -287,9 +318,74 @@ function testSongCatalogAndGeneratedDifficulty(): void {
     equal(emptyAnalysis.score, 0, "An empty chart has no synthetic difficulty pressure");
 }
 
+function testRandomAnimationProfileSelection(): void {
+    equal(selectSongAnimationProfile(-5).id, "A", "Finite values below zero clamp to profile A");
+    equal(selectSongAnimationProfile(0).id, "A", "The zero boundary selects profile A");
+    equal(selectSongAnimationProfile(0.499999).id, "A", "Values below one half select profile A");
+    equal(selectSongAnimationProfile(0.5).id, "B", "The half-open split assigns one half to profile B");
+    equal(selectSongAnimationProfile(1).id, "B", "The upper boundary selects profile B");
+    equal(selectSongAnimationProfile(5).id, "B", "Finite values above one clamp to profile B");
+    equal(selectSongAnimationProfile(NaN).id, "A", "NaN deterministically falls back to profile A");
+    equal(selectSongAnimationProfile(Infinity).id, "A", "Positive infinity falls back to profile A");
+    equal(selectSongAnimationProfile(-Infinity).id, "A", "Negative infinity falls back to profile A");
+    near(
+        SONG_ANIMATION_PROFILES[0].danceDurationMs,
+        FIRST_DANCE_DURATION_MS,
+        0.000001,
+        "Profile A uses the audited DanceCombo duration"
+    );
+    near(
+        SONG_ANIMATION_PROFILES[1].danceDurationMs,
+        SECOND_DANCE_DURATION_MS,
+        0.000001,
+        "Profile B uses the audited DanceCombo2 duration"
+    );
+
+    const mismatched: SongAnimationProfile = {
+        id: "A",
+        danceClip: "DanceCombo",
+        successResultClip: "ResultPose2",
+        failureResultClip: "ResultPose3",
+        danceDurationMs: FIRST_DANCE_DURATION_MS
+    };
+    equal(isKnownSongAnimationProfile(mismatched), false, "A mismatched dance/success pair is rejected");
+    throws(
+        () => createSongSessionConfig(
+            SONG_CATALOG[0],
+            mismatched,
+            DEFAULT_JUDGE_WINDOWS.badMs
+        ),
+        "Session creation rejects a mismatched action group"
+    );
+    throws(
+        () => resolveSongOutcome(SONG_CATALOG[0], mismatched, 999999),
+        "Outcome resolution rejects a mismatched success action"
+    );
+
+    SONG_CATALOG.forEach((song) => {
+        const firstRun = createSongRunSessionConfig(
+            song,
+            DEFAULT_JUDGE_WINDOWS.badMs,
+            0.25
+        );
+        const restartedRun = createSongRunSessionConfig(
+            song,
+            DEFAULT_JUDGE_WINDOWS.badMs,
+            0.75
+        );
+        equal(firstRun.animationProfile.id, "A", song.id + " can start with profile A");
+        equal(restartedRun.animationProfile.id, "B", song.id + " can restart with profile B");
+        equal(firstRun.animationProfile.id, "A", song.id + " first run remains stable after restart creation");
+    });
+}
+
 function testSongSessionConfigurations(): void {
     const sessions = SONG_CATALOG.map((song) => {
-        return createSongSessionConfig(song, DEFAULT_JUDGE_WINDOWS.badMs);
+        return createSongSessionConfig(
+            song,
+            SONG_ANIMATION_PROFILES[0],
+            DEFAULT_JUDGE_WINDOWS.badMs
+        );
     });
     equal(
         sessions.map((session) => session.songId).join(","),
@@ -301,27 +397,34 @@ function testSongSessionConfigurations(): void {
         "凤舞九天,猪猪侠,Are You OK",
         "Track UI receives the selected title from the session"
     );
-    near(sessions[0].danceDurationMs, 26791.66603088379, 0.000001, "First session uses DanceCombo length");
-    near(sessions[1].danceDurationMs, 20458.33396911621, 0.000001, "Second session uses DanceCombo2 length");
-    near(sessions[2].danceDurationMs, 26791.66603088379, 0.000001, "Third session reuses DanceCombo length");
-    sessions.forEach((session, index) => {
-        equal(session.groupCount, 8, session.songId + " config drives eight groups");
-        equal(session.noteCount, beatmapNoteCount(SONG_CATALOG[index].beatmap), session.songId + " uses its chart count");
-        equal(
-            session.songDurationMs >= 50000 && session.songDurationMs <= 60000,
-            true,
-            session.songId + " input timeline completes around 50–60 seconds"
-        );
-        equal(
-            session.estimatedCompletionMs >= 50000 && session.estimatedCompletionMs <= 60000,
-            true,
-            session.songId + " final dance also completes around 50–60 seconds"
-        );
-        equal(session.estimatedCompletionMs < session.audioDurationMs, true, session.songId + " audio outlasts play");
-        const engine = new SequenceEngine(session.beatmap, new JudgeSystem());
-        engine.start();
-        equal(engine.getSnapshot().groupCount, session.groupCount, session.songId + " engine uses selected groups");
-        equal(engine.getSnapshot().totalNoteCount, session.noteCount, session.songId + " engine uses selected notes");
+    SONG_CATALOG.forEach((song) => {
+        SONG_ANIMATION_PROFILES.forEach((profile) => {
+            const session = createSongSessionConfig(
+                song,
+                profile,
+                DEFAULT_JUDGE_WINDOWS.badMs
+            );
+            const label = song.id + "/" + profile.id;
+            equal(session.animationProfile, profile, label + " stores the selected profile once");
+            near(session.danceDurationMs, profile.danceDurationMs, 0.000001, label + " uses its profile duration");
+            equal(session.groupCount, 8, label + " config drives eight groups");
+            equal(session.noteCount, beatmapNoteCount(song.beatmap), label + " uses its chart count");
+            equal(
+                session.songDurationMs >= 50000 && session.songDurationMs <= 60000,
+                true,
+                label + " input timeline completes around 50–60 seconds"
+            );
+            equal(
+                session.estimatedCompletionMs >= 50000 && session.estimatedCompletionMs <= 60000,
+                true,
+                label + " final dance also completes around 50–60 seconds"
+            );
+            equal(session.estimatedCompletionMs < session.audioDurationMs, true, label + " audio outlasts play");
+            const engine = new SequenceEngine(session.beatmap, new JudgeSystem());
+            engine.start();
+            equal(engine.getSnapshot().groupCount, session.groupCount, label + " engine uses selected groups");
+            equal(engine.getSnapshot().totalNoteCount, session.noteCount, label + " engine uses selected notes");
+        });
     });
     equal(wrappedSongIndex(0, 1), 1, "Next wraps from the first song to the second");
     equal(wrappedSongIndex(1, 1), 2, "Next advances from the second song to the third");
@@ -331,54 +434,61 @@ function testSongSessionConfigurations(): void {
 
 function testEverySongDanceFlowCoverage(): void {
     SONG_CATALOG.forEach((song) => {
-        const session = createSongSessionConfig(song, DEFAULT_JUDGE_WINDOWS.badMs);
-        const flow = new GroupDanceFlow(session.groupCount, session.danceDurationMs);
-        let previousEndMs = 0;
-        for (let groupIndex = 0; groupIndex < session.groupCount; groupIndex += 1) {
-            const segment = flow.beginGroupDance(groupIndex);
-            near(segment.startMs, previousEndMs, 0.000001, song.id + " dance slices stay continuous");
-            near(
-                segment.endMs,
-                session.danceDurationMs * (groupIndex + 1) / session.groupCount,
-                0.000001,
-                song.id + " dance slice reaches its configured boundary"
-            );
-            const transition = flow.update(segment.durationMs);
-            if (!transition) {
-                throw new Error(song.id + " expected a transition at dance segment " + groupIndex);
+        SONG_ANIMATION_PROFILES.forEach((profile) => {
+            const session = createSongSessionConfig(song, profile, DEFAULT_JUDGE_WINDOWS.badMs);
+            const flow = new GroupDanceFlow(session.groupCount, session.danceDurationMs);
+            const label = song.id + "/" + profile.id;
+            let previousEndMs = 0;
+            for (let groupIndex = 0; groupIndex < session.groupCount; groupIndex += 1) {
+                const segment = flow.beginGroupDance(groupIndex);
+                near(segment.startMs, previousEndMs, 0.000001, label + " dance slices stay continuous");
+                near(
+                    segment.endMs,
+                    session.danceDurationMs * (groupIndex + 1) / session.groupCount,
+                    0.000001,
+                    label + " dance slice reaches its configured boundary"
+                );
+                const transition = flow.update(segment.durationMs);
+                if (!transition) {
+                    throw new Error(label + " expected a transition at dance segment " + groupIndex);
+                }
+                equal(
+                    transition.kind,
+                    groupIndex === session.groupCount - 1 ? "result" : "next-group",
+                    label + " transitions after each configured segment"
+                );
+                previousEndMs = segment.endMs;
             }
-            equal(
-                transition.kind,
-                groupIndex === session.groupCount - 1 ? "result" : "next-group",
-                song.id + " transitions after each configured segment"
+            near(
+                previousEndMs,
+                session.danceDurationMs,
+                0.000001,
+                label + " eight slices cover its animation exactly once"
             );
-            previousEndMs = segment.endMs;
-        }
-        near(
-            previousEndMs,
-            session.danceDurationMs,
-            0.000001,
-            song.id + " eight slices cover its animation exactly once"
-        );
+        });
     });
 }
 
 function testSongOutcomeBoundaries(): void {
-    const expectedSuccessClips = ["ResultPose", "ResultPose2", "ResultPose"];
-    SONG_CATALOG.forEach((song, index) => {
+    SONG_CATALOG.forEach((song) => {
         const maximum = beatmapNoteCount(song.beatmap) * 1000;
         const passing = Math.ceil(maximum * 0.6);
         equal(maximumSongScore(song), maximum, song.id + " maximum follows its Perfect note count");
         equal(passingSongScore(song), passing, song.id + " uses the rounded-up 60% passing line");
-        const below = resolveSongOutcome(song, passing - 1);
-        const boundary = resolveSongOutcome(song, passing);
-        const perfect = resolveSongOutcome(song, maximum);
-        equal(below.passed, false, song.id + " fails one point below the line");
-        equal(below.resultClip, "ResultPose3", song.id + " failure uses the shared pose");
-        equal(boundary.passed, true, song.id + " passes exactly on the line");
-        equal(boundary.resultClip, expectedSuccessClips[index], song.id + " uses its success pose");
-        equal(perfect.passed, true, song.id + " perfect score passes");
-        equal(perfect.score, maximum, song.id + " perfect result keeps the actual score");
+        SONG_ANIMATION_PROFILES.forEach((profile) => {
+            const session = createSongSessionConfig(song, profile, DEFAULT_JUDGE_WINDOWS.badMs);
+            const label = song.id + "/" + profile.id;
+            const below = resolveSongOutcome(song, session.animationProfile, passing - 1);
+            const boundary = resolveSongOutcome(song, session.animationProfile, passing);
+            const perfect = resolveSongOutcome(song, session.animationProfile, maximum);
+            equal(below.passed, false, label + " fails one point below the line");
+            equal(below.resultClip, "ResultPose3", label + " failure uses the shared pose");
+            equal(boundary.passed, true, label + " passes exactly on the line");
+            equal(boundary.resultClip, profile.successResultClip, label + " uses its paired success pose");
+            equal(boundary.animationProfileId, profile.id, label + " outcome retains the session profile");
+            equal(perfect.passed, true, label + " perfect score passes");
+            equal(perfect.score, maximum, label + " perfect result keeps the actual score");
+        });
     });
 }
 
@@ -1547,6 +1657,7 @@ async function run(): Promise<void> {
     testJudgeBoundaries();
     testSongGridAndGroups();
     testSongCatalogAndGeneratedDifficulty();
+    testRandomAnimationProfileSelection();
     testSongSessionConfigurations();
     testEverySongDanceFlowCoverage();
     testSongOutcomeBoundaries();
@@ -1579,7 +1690,7 @@ async function run(): Promise<void> {
     await testBuildaReadyBoundedFallback();
     await testBuildaAudioResultMapping();
     await testSongPreviewControllerSerialization();
-    console.log("logic-tests=passed cases=35");
+    console.log("logic-tests=passed cases=36");
 }
 
 run().catch((error) => {
