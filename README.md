@@ -2,7 +2,7 @@
 
 这是一个可直接用 **Cocos Creator 2.4.9** 打开、构建和游玩的横屏手机音游 MVP。当前版本包含三首真实 MP3 关卡：`凤舞九天`、`猪猪侠` 与 `Are You OK`。谱面按八个组合展示，但组合内每个方向键都有独立目标时刻；每次输入结算为 `Perfect / Good / Bad / Miss` 之一。
 
-项目不依赖 npm 第三方包或外部 CDN。`assets/texture/` 固定收录 29 张运行时贴图；当前舞台角色来自独立 `dancer` 3D Bundle，使用 `IdleSway0.fbx` 自带的低面模型、33-joint 骨架与黄衣角色纹理，并提供 7 段动画。菜单使用稳定名 `IdleSway`，玩法输入等待使用 `IdleSway0`，未及格统一使用 `ResultPose3`。`assets/design/` 仅作布局与风格参考，不进入运行 Bundle。
+项目不依赖 npm 第三方包或外部 CDN。`assets/texture/` 固定收录 29 张运行时贴图；当前舞台角色来自独立 `dancer` 3D Bundle，使用 `IdleSway0.fbx` 自带的低面模型、33-joint 骨架与黄衣角色纹理，并提供 7 段动画。菜单使用稳定名 `IdleSway`，玩法输入等待使用 `IdleSway0`；每次实际开局从两套完整动作组中随机选择一套，未及格统一使用 `ResultPose3`。`assets/design/` 仅作布局与风格参考，不进入运行 Bundle。
 
 ## 快速开始
 
@@ -35,8 +35,6 @@ npm run verify
 COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 ```
 
-原始舞者 FBX 只放在 Creator 资源数据库之外的 `source-assets/dancer/`，不得放入 `assets/`。运行时只消费已转换并检入的 glTF/JPEG/bin；源文件哈希、转换参数、骨骼与 rest-space 重定向证据由 `tools/verify-dancer-assets.mjs` 锁定，细节见 `source-assets/dancer/README.md`。
-
 ## 操作与选曲
 
 | 动作 | 键盘 | 触控 |
@@ -48,6 +46,8 @@ COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 
 “帮助”展示判定规则；“排行榜”展示本设备前 5 条完整结算成绩及最近一次完整结算名次，并明确它不是平台排名；“设置”在 Builda 宿主内打开统一暂停/设置/退出页。玩法右上可重新开始或返回主页。
 
+选歌与循环试听不会选择动作组。关卡音乐请求完成、真正建立新局时只抽取一次：动作组 A 为 `DanceCombo + ResultPose + ResultPose3`，总舞蹈时长 `26791.66603088379ms`；动作组 B 为 `DanceCombo2 + ResultPose2 + ResultPose3`，总舞蹈时长 `20458.33396911621ms`。本局八个舞段、会话时长和最终成功/失败动作始终读取同一个 profile；点击“重新开始”会建立新局并重新抽取一次。
+
 `GameBootstrap.onLoad()` 会先同步创建可见、可点击的降级菜单并绑定输入，再并行等待 Builda 平台与 `texture` Bundle。平台 ready 后即可开始；若 `Builda.runtime.ready()` 超过 3 秒仍未返回，适配器会清理计时器、记录警告并进入浏览器兼容模式。美术异步失败不会阻塞核心玩法，稍后到达的贴图只更新现有 SpriteFrame，不重建按钮或重复绑定监听。
 
 `DancerAnimationController` 独立异步预载 `dancer` Bundle，但不参与平台 ready 或关卡进入门控。加载成功并建立分层相机、且首个活动帧的 33 组蒙皮矩阵均为有限值后，才禁用 2D 降级绘制；Bundle、Prefab、动画、相机或首帧蒙皮失败时只记录警告并继续使用降级角色。
@@ -58,13 +58,13 @@ COCOS_CREATOR=/absolute/path/to/CocosCreator npm run build
 
 三份谱面均有 8 个确定性组合，note ID 全局唯一且目标时间严格递增。BPM 与 offset 来自各音频前 120 秒的离线主拍分析；所有 note 都位于对应的整拍或半拍网格。首个可玩拍点约 7–8 秒，最后判定及最终舞段约在 55 秒完成。
 
-| 歌曲 / 歌手 | BPM / offset | 音频时长 | note / 星级 | 首拍 / 最后判定 | 预计完成 | 舞蹈 / 成功动作 |
+| 歌曲 / 歌手 | BPM / offset | 音频时长 | note / 星级 | 首拍 / 最后判定 | 预计完成 A / B | 每局动作 |
 |---|---:|---:|---:|---:|---:|---|
-| 凤舞九天 / 凤舞九天 | `138.7 / 95.8ms` | `599.928s` | `32 / 2★` | `7.450s / 52.186s` | `55.536s` | `DanceCombo / ResultPose` |
-| 猪猪侠 / 陈洁丽 | `140.88 / 352.9ms` | `218.462s` | `40 / 3★` | `7.593s / 52.066s` | `54.624s` | `DanceCombo2 / ResultPose2` |
-| Are You OK / 雷军 | `124.82 / 115.5ms` | `132.807s` | `27 / 1★` | `7.807s / 52.210s` | `55.560s` | `DanceCombo / ResultPose` |
+| 凤舞九天 / 凤舞九天 | `138.7 / 95.8ms` | `599.928s` | `32 / 2★` | `7.450s / 52.186s` | `55.535s / 54.744s` | `A / B 随机` |
+| 猪猪侠 / 陈洁丽 | `140.88 / 352.9ms` | `218.462s` | `40 / 3★` | `7.593s / 52.066s` | `55.415s / 54.623s` | `A / B 随机` |
+| Are You OK / 雷军 | `124.82 / 115.5ms` | `132.807s` | `27 / 1★` | `7.807s / 52.210s` | `55.559s / 54.768s` | `A / B 随机` |
 
-组合之间的最小音频时钟空档分别约为 `5.191s / 5.324s / 4.807s`，均覆盖该歌曲的单组舞段和两侧 `Bad` 判定余量。`GroupDanceFlow` 在舞段中锁住输入与自动 Miss，但真实 BGM 和 `SongClock` 连续前进；舞段结束后下一组已经按原歌曲时间轴排好，不再像短循环占位曲那样暂停歌曲时钟。
+组合之间的最小音频时钟空档分别约为 `5.191s / 5.324s / 4.807s`，均覆盖更长的动作组 A 单组舞段和两侧 `Bad` 判定余量，因此两套动作对三首歌曲都安全。`GroupDanceFlow` 在舞段中锁住输入与自动 Miss，但真实 BGM 和 `SongClock` 连续前进；舞段结束后下一组已经按原歌曲时间轴排好，不再像短循环占位曲那样暂停歌曲时钟。
 
 每首进入玩法时都使用选曲页对应的同一份 MP3，并设置 `loop=false`。试听使用 `loop=true`。播放、停止、快速切歌、返回和重新开始都经过同一串行音频控制器：关卡时钟尽量在宿主 `playBGM()` Promise 完成的边界启动；宿主音频不可用或拒绝时仍启动单调 fallback 时钟。重新开始会从头请求同一首 BGM；返回主页与最终结算会停止 BGM；过期的异步播放完成后会被再次停止，避免旧请求泄漏。
 
@@ -88,7 +88,7 @@ assets/scripts/
   domain/Beatmap.ts             三首歌曲的 BPM、offset、8 组确定性谱面
   domain/BeatmapDifficulty.ts   从真实谱面压力分析 1–3 星难度
   domain/LocalLeaderboard.ts    本地榜排序、截断、持久化与会话降级
-  domain/SongCatalog.ts         三曲稳定 ID、音频、会话与动作映射
+  domain/SongCatalog.ts         三曲稳定 ID、两套动作组、随机选择与局内会话
   timing/SongClock.ts           单调时钟、暂停/恢复/停止与校准偏移
   gameplay/GroupDanceFlow.ts    八组连续舞段、输入锁与完成阶段
   gameplay/JudgeSystem.ts       四档逐 note 判定窗口与固定分值
@@ -105,7 +105,7 @@ assets/scripts/
   ui/GameBootstrap.ts           选曲、歌曲会话、结算与生命周期
 ```
 
-`SequenceEngine`、`GroupDanceFlow`、`LocalLeaderboard`、`JudgeSystem`、`TimingProgress`、`RhythmLayout`、`BeatmapDifficulty`、`SongPreviewController` 和 `UiStartupState` 不引用 `cc`。测试直接编译同一份 TypeScript，实现覆盖三曲 catalog、节拍网格与组间空档、会话时长、循环索引、动画/分数边界、连续歌曲时钟、选曲布局、试听/玩法 loop 差异以及快速切换和取消竞态。
+`SequenceEngine`、`GroupDanceFlow`、`LocalLeaderboard`、`JudgeSystem`、`TimingProgress`、`RhythmLayout`、`BeatmapDifficulty`、`SongPreviewController` 和 `UiStartupState` 不引用 `cc`。测试直接编译同一份 TypeScript，实现覆盖三曲 catalog、随机值边界与非法值、两套动作组可达性、每歌 × 每动作组的谱面空档/会话/舞段/结算一致性、循环索引、连续歌曲时钟、选曲布局、试听/玩法 loop 差异以及快速切换和取消竞态。
 
 ## 资源与发布门禁
 

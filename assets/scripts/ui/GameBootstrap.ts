@@ -7,7 +7,9 @@ import {
 } from "../domain/LocalLeaderboard";
 import {
     beatmapNoteCount,
+    createSongRunSessionConfig,
     createSongSessionConfig,
+    SONG_ANIMATION_PROFILES,
     SONG_CATALOG,
     resolveSongOutcome,
     SongDefinition,
@@ -141,6 +143,7 @@ export default class GameBootstrap extends cc.Component {
     private activeSong: SongDefinition = SONG_CATALOG[0];
     private activeSession: SongSessionConfig = createSongSessionConfig(
         this.activeSong,
+        SONG_ANIMATION_PROFILES[0],
         DEFAULT_JUDGE_WINDOWS.badMs
     );
     private engine: SequenceEngine = new SequenceEngine(this.activeSession.beatmap, this.judge);
@@ -1522,7 +1525,7 @@ export default class GameBootstrap extends cc.Component {
         this.clock.restart();
         if (this.dancerController) {
             this.dancerController.setGameplayIdle(true);
-            this.dancerController.setAnimationProfile(this.activeSong.animation);
+            this.dancerController.setAnimationProfile(this.activeSession.animationProfile);
         }
         this.pausedByHost = false;
         this.restartAfterHostResume = false;
@@ -1668,9 +1671,10 @@ export default class GameBootstrap extends cc.Component {
     }
 
     private configureActiveSongSession(): void {
-        this.activeSession = createSongSessionConfig(
+        this.activeSession = createSongRunSessionConfig(
             this.activeSong,
-            DEFAULT_JUDGE_WINDOWS.badMs
+            DEFAULT_JUDGE_WINDOWS.badMs,
+            Math.random()
         );
         this.engine = new SequenceEngine(this.activeSession.beatmap, this.judge);
         this.danceFlow = new GroupDanceFlow(
@@ -1681,6 +1685,10 @@ export default class GameBootstrap extends cc.Component {
         this.currentOutcome = null;
         this.trackLabel.string = this.activeSession.title;
         this.levelLabel.string = this.activeSong.beatmap.bpm + " BPM · 节拍训练场";
+        console.info(
+            "[GameBootstrap] action-profile=" + this.activeSession.animationProfile.id
+            + " song=" + this.activeSong.id
+        );
     }
 
     private cancelPendingGameplayStart(): void {
@@ -1802,7 +1810,11 @@ export default class GameBootstrap extends cc.Component {
         }
         this.songPreview.stop();
         const snapshot = this.engine.getSnapshot();
-        this.currentOutcome = resolveSongOutcome(this.activeSong, snapshot.score);
+        this.currentOutcome = resolveSongOutcome(
+            this.activeSong,
+            this.activeSession.animationProfile,
+            snapshot.score
+        );
         this.recordCompletedRun();
         this.lastResultText = (this.currentOutcome.passed ? "成功 / PASS" : "失败 / FAIL")
             + " · 得分 " + this.currentOutcome.score + " · 及格 " + this.currentOutcome.passingScore;
@@ -2080,7 +2092,11 @@ export default class GameBootstrap extends cc.Component {
         this.globalTimeline.fill();
 
         if (presentationFinished) {
-            const outcome = this.currentOutcome || resolveSongOutcome(this.activeSong, snapshot.score);
+            const outcome = this.currentOutcome || resolveSongOutcome(
+                this.activeSong,
+                this.activeSession.animationProfile,
+                snapshot.score
+            );
             this.progressLabel.string = this.resultProgressText(outcome);
             this.progressLabel.node.color = feedbackColor;
         } else if (currentNote) {
@@ -2620,7 +2636,11 @@ export default class GameBootstrap extends cc.Component {
             this.instructionLabel.string = this.danceInstruction(flow.segment);
         } else if (flow.phase === "result") {
             const snapshot = this.engine.getSnapshot();
-            const outcome = this.currentOutcome || resolveSongOutcome(this.activeSong, snapshot.score);
+            const outcome = this.currentOutcome || resolveSongOutcome(
+                this.activeSong,
+                this.activeSession.animationProfile,
+                snapshot.score
+            );
             this.instructionLabel.string = this.resultInstruction(outcome);
         } else if (this.gameplayActive) {
             this.instructionLabel.string = "方向键 / WASD · 在箭头目标时刻输入";
